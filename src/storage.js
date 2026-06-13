@@ -2,7 +2,7 @@ const axios = require('axios');
 const fs = require('fs');
 
 const STORAGE_API_BASE = 'https://storage.to/api';
-const VISITOR_TOKEN = 'abc123'; // Replace with your actual token or move to .env
+const VISITOR_TOKEN = '264|GcIRtJileqZPHxfKNxDDlggi2EXdttHacieEpVVM52f37272';
 
 /**
  * Initializes the upload and returns the presigned upload URL
