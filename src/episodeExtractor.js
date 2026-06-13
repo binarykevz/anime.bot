@@ -1,5 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 
 const BASE_URL = 'https://anikai.watch';
 
@@ -10,125 +11,57 @@ const headers = {
     'Referer': `${BASE_URL}/`
 };
 
+/**
+ * Extracts the list of episodes from the WordPress series page
+ */
 async function getEpisodes(animeUrl) {
     try {
         console.log(`[Debug] Fetching anime page: ${animeUrl}`);
-        const htmlRes = await axios.get(animeUrl, { headers, timeout: 10000 });
-        const $ = cheerio.load(htmlRes.data);
         
-        let animeId = null;
-
-        // Strategy 1: Extract from URL (e.g., /watch/name-12345 or /name-12345)
-        const urlMatch = animeUrl.match(/-([0-9]+)(?:\?|$|\/)/);
-        if (urlMatch) animeId = urlMatch[1];
-
-        // Strategy 2: #syncData div (Standard for AniWatch/Zoro clones)
-        if (!animeId) {
-            const syncData = $('#syncData');
-            if (syncData.length) {
-                animeId = syncData.attr('data-id') || syncData.attr('data-anime-id');
-            }
+        // Extract the slug to find the parent series page
+        let slugMatch = animeUrl.match(/\/([^/]+?)(?:-episode-\d+|-ep-\d+)?(?:-in-english-(?:subbed|dubbed))?\/?$/i);
+        let slug = slugMatch ? slugMatch[1] : animeUrl.split('/').filter(Boolean).pop();
+        
+        let seriesUrl = animeUrl;
+        if (animeUrl.includes('-episode-') || animeUrl.includes('-ep-')) {
+            seriesUrl = `${BASE_URL}/series/${slug}/`;
         }
 
-        // Strategy 3: Hidden inputs
-        if (!animeId) {
-            animeId = $('input#movie_id').val() || $('input#ani_id').val() || $('input#id').val();
+        console.log(`[Debug] Fetching series page: ${seriesUrl}`);
+        let htmlRes;
+        try {
+            htmlRes = await axios.get(seriesUrl, { headers, timeout: 10000 });
+        } catch (err) {
+            // If /series/slug fails, try just /slug/
+            console.log(`[Debug] Series URL failed, trying fallback: ${BASE_URL}/${slug}/`);
+            seriesUrl = `${BASE_URL}/${slug}/`;
+            htmlRes = await axios.get(seriesUrl, { headers, timeout: 10000 });
         }
-
-        // Strategy 4: Meta tags
-        if (!animeId) {
-            const metaUrl = $('meta[property="og:url"]').attr('content') || $('meta[property="al:web:url"]').attr('content');
-            if (metaUrl) {
-                const metaMatch = metaUrl.match(/-([0-9]+)(?:\?|$|\/)/);
-                if (metaMatch) animeId = metaMatch[1];
-            }
-        }
-
-        // Strategy 5: Inline scripts (JSON or variables)
-        if (!animeId) {
-            const scripts = $('script');
-            for (let i = 0; i < scripts.length; i++) {                const scriptContent = $(scripts[i]).html();
-                if (scriptContent) {
-                    const match = scriptContent.match(/anime_id\s*=\s*['"]?(\d+)['"]?/i) || 
-                                  scriptContent.match(/const\s+id\s*=\s*['"]?(\d+)['"]?/i) ||
-                                  scriptContent.match(/"id"\s*:\s*["']?(\d+)["']?/i) ||
-                                  scriptContent.match(/id:\s*(\d+)/i);
-                    if (match) {
-                        animeId = match[1];
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!animeId) {
-            console.error('[Debug] Failed to find ID. HTML snippet:', $.html().substring(0, 500));
-            throw new Error('Could not extract Anime ID from page. The site structure may have changed.');
-        }
-
-        console.log(`[Debug] ✅ Found Anime ID: ${animeId}`);
-
-        // Strategy 6: Try different AJAX endpoints for episode list
-        const endpoints = [
-            `${BASE_URL}/ajax/v2/episode/list/${animeId}`,
-            `${BASE_URL}/ajax/episode/list/${animeId}`
-        ];
-
-        let epHtml = null;
-        for (const endpoint of endpoints) {
-            try {
-                console.log(`[Debug] Trying endpoint: ${endpoint}`);
-                const epRes = await axios.get(endpoint, { 
-                    headers: { ...headers, 'X-Requested-With': 'XMLHttpRequest' },
-                    timeout: 10000
-                });
-                
-                if (epRes.data && epRes.data.html) {
-                    epHtml = epRes.data.html;
-                    break;
-                } else if (epRes.data && typeof epRes.data === 'string' && epRes.data.includes('ss-list')) {
-                    epHtml = epRes.data;
-                    break;
-                }
-            } catch (e) {
-                console.log(`[Debug] Endpoint failed: ${endpoint} - ${e.message}`);
-            }
-        }
-
-        if (!epHtml) {
-            throw new Error('Could not fetch episode list from any known AJAX endpoint.');        }
-
-        const $$ = cheerio.load(epHtml);
+        
+        const $ = cheerio.load(htmlRes.data);
         const episodes = [];
         
-        // Try multiple selectors for episode items
-        const epSelectors = ['.ss-list a', '.ep-item', '.episode-item', '.flw-item'];
-        let foundEps = false;
-        
-        for (const selector of epSelectors) {
-            const items = $$(selector);
-            if (items.length > 0) {
-                items.each((i, el) => {
-                    const epNum = $$(el).find('.e-dinumber, .name, .film-name').text().trim() || 
-                                  $$(el).attr('title') || 
-                                  $$(el).text().trim() || 
-                                  `Ep ${i + 1}`;
-                    const epId = $$(el).attr('data-id') || $$(el).attr('data-episode-id') || $$(el).attr('href')?.match(/\/(\d+)/)?.[1];
-                    
-                    if (epId) {
-                        episodes.push({ number: epNum, id: epId });
-                        foundEps = true;
-                    }
-                });
-                if (foundEps) break;
+        // Find episode links on the series page
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
+                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
+                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
+                                if (!episodes.find(ep => ep.url === href)) {
+                    episodes.push({ number: epNum, url: href, id: href });
+                }
             }
-        }
+        });
 
+        // Fallback: If no episodes found on series page, assume the provided URL is the target
         if (episodes.length === 0) {
-            console.error('[Debug] Episode HTML:', epHtml.substring(0, 500));
-            throw new Error('Found episode container, but could not parse episode IDs.');
+            console.log(`[Debug] No episodes found on series page. Assuming the provided URL is the target.`);
+            const epNumMatch = animeUrl.match(/(?:-episode-|-ep-)(\d+)/i);
+            const epNum = epNumMatch ? epNumMatch[1] : '1';
+            episodes.push({ number: epNum, url: animeUrl, id: animeUrl });
         }
 
+        console.log(`[Debug] ✅ Found ${episodes.length} episodes.`);
         return episodes;
 
     } catch (error) {
@@ -137,71 +70,134 @@ async function getEpisodes(animeUrl) {
     }
 }
 
-async function getVideoSourceUrl(episodeId) {
+/**
+ * Uses Puppeteer to load the episode page, find the video iframe/source, 
+ * and intercept the .m3u8 or .mp4 video URL from the network traffic.
+ */
+async function getVideoSourceUrl(episodeUrl) {
+    console.log(`[Debug] Launching Puppeteer to extract video URL from: ${episodeUrl}`);
+    
+    let browser;
     try {
-        console.log(`[Debug] Fetching servers for episode ID: ${episodeId}`);
-        
-        const serverEndpoints = [
-            `${BASE_URL}/ajax/v2/episode/servers?episodeId=${episodeId}`,
-            `${BASE_URL}/ajax/episode/servers?episodeId=${episodeId}`
-        ];
-        let serverHtml = null;
-        for (const endpoint of serverEndpoints) {
-            try {
-                const res = await axios.get(endpoint, { 
-                    headers: { ...headers, 'X-Requested-With': 'XMLHttpRequest' },
-                    timeout: 10000
-                });
-                if (res.data && (res.data.html || typeof res.data === 'string')) {
-                    serverHtml = res.data.html || res.data;
-                    break;
-                }
-            } catch (e) { /* ignore */ }
-        }
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
 
-        if (!serverHtml) throw new Error('Could not fetch server list.');
-
-        const $$ = cheerio.load(serverHtml);
-        
-        let serverId = $$('.server-item[data-type="sub"]').first().attr('data-id') || 
-                       $$('.server-item').first().attr('data-id') ||
-                       $$('.item').first().attr('data-id');
-
-        if (!serverId) {
-            console.error('[Debug] Server HTML:', serverHtml.substring(0, 500));
-            throw new Error('No video servers found on the episode page.');
-        }
-
-        console.log(`[Debug] ✅ Found Server ID: ${serverId}`);
-
-        const sourceEndpoints = [
-            `${BASE_URL}/ajax/v2/episode/sources?id=${serverId}`,
-            `${BASE_URL}/ajax/episode/sources?id=${serverId}`
-        ];
+        const page = await browser.newPage();
+        await page.setUserAgent(headers['User-Agent']);
+        await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
 
         let videoUrl = null;
-        for (const endpoint of sourceEndpoints) {
-            try {
-                const res = await axios.get(endpoint, { 
-                    headers: { ...headers, 'X-Requested-With': 'XMLHttpRequest' },
-                    timeout: 10000
-                });
-                if (res.data) {
-                    videoUrl = res.data.link || res.data.sources?.[0]?.file || res.data.url;
-                    if (videoUrl) break;
-                }
-            } catch (e) { /* ignore */ }
+
+        // Intercept network requests on the main page
+        page.on('response', async (response) => {
+            const url = response.url();
+            if (url.includes('.m3u8') || url.includes('.mp4')) {
+                if (!videoUrl) {
+                    videoUrl = url;
+                    console.log(`[Debug] ✅ Intercepted video URL: ${videoUrl}`);                }
+            }
+        });
+
+        console.log(`[Debug] Navigating to episode page...`);
+        await page.goto(episodeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // WordPress anime themes often hide the player behind a "Click to Play" button
+        const clickableSelectors = ['.btn-play', '.play-button', '.player-loading', 'a[href="#player"]', '.vscontrol'];
+        for (const selector of clickableSelectors) {
+            const el = await page.$(selector);
+            if (el) {
+                console.log(`[Debug] Clicking element to load player: ${selector}`);
+                await el.click();
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
         }
 
-        if (!videoUrl) {
-            throw new Error('Video source link not found in API response.');        }
+        // Find the iframe or video source URL
+        const iframeUrl = await page.evaluate(() => {
+            // 1. Check for direct iframes in the page
+            const iframes = document.querySelectorAll('iframe');
+            for (let iframe of iframes) {
+                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook')) {
+                    return iframe.src;
+                }
+            }
+            
+            // 2. Check for base64 encoded iframes in dropdowns (common in WP anime themes)
+            const options = document.querySelectorAll('select option');
+            for (let opt of options) {
+                const val = opt.value;
+                if (val && val.length > 50) {
+                    try {
+                        // Use native browser atob instead of Node's Buffer
+                        const decoded = atob(val); 
+                        const match = decoded.match(/src="([^"]+)"/);
+                        if (match && match[1]) {
+                            return match[1];
+                        }
+                    } catch (e) {}
+                }
+            }
+            
+            // 3. Check for data attributes on links
+            const links = document.querySelectorAll('a[data-video], a[data-src], a[data-embed]');
+            for (let link of links) {
+                const src = link.getAttribute('data-video') || link.getAttribute('data-src') || link.getAttribute('data-embed');
+                if (src && src.startsWith('http')) return src;
+            }
+            // 4. Check for direct video tags
+            const videos = document.querySelectorAll('video source, video');
+            for (let vid of videos) {
+                const src = vid.src || vid.getAttribute('src');
+                if (src && (src.includes('.mp4') || src.includes('.m3u8'))) {
+                    return src;
+                }
+            }
 
-        console.log(`[Debug] ✅ Found Video URL`);
+            return null;
+        });
+
+        if (iframeUrl) {
+            console.log(`[Debug] ✅ Found iframe/video source: ${iframeUrl}`);
+
+            // Open the iframe in a new page to intercept its network requests
+            const iframePage = await browser.newPage();
+            await iframePage.setUserAgent(headers['User-Agent']);
+            await iframePage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
+
+            iframePage.on('response', async (response) => {
+                const url = response.url();
+                if (url.includes('.m3u8') || url.includes('.mp4')) {
+                    if (!videoUrl) {
+                        videoUrl = url;
+                        console.log(`[Debug] ✅ Intercepted video URL from iframe: ${videoUrl}`);
+                    }
+                }
+            });
+
+            console.log(`[Debug] Navigating to iframe...`);
+            await iframePage.goto(iframeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        } else {
+            console.log(`[Debug] ⚠️ No iframe found. Relying solely on main page network interception.`);
+        }
+
+        // Wait a few seconds for the video player to initialize and request the stream
+        console.log(`[Debug] Waiting for video player to load...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        if (!videoUrl) {
+            throw new Error('Could not intercept .m3u8 or .mp4 URL. The site might be using a new player or blocking Puppeteer.');
+        }
+
         return videoUrl;
 
     } catch (error) {
         console.error('Video Source Error:', error.message);
-        throw new Error(`Failed to extract video URL: ${error.message}`);
+        throw new Error(`Failed to extract video URL: ${error.message}`);    } finally {
+        if (browser) {
+            await browser.close();
+        }
     }
 }
 
