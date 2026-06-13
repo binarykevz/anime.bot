@@ -18,7 +18,6 @@ async function getEpisodes(animeUrl) {
     try {
         console.log(`[Debug] Fetching anime page: ${animeUrl}`);
         
-        // Extract the slug to find the parent series page
         let slugMatch = animeUrl.match(/\/([^/]+?)(?:-episode-\d+|-ep-\d+)?(?:-in-english-(?:subbed|dubbed))?\/?$/i);
         let slug = slugMatch ? slugMatch[1] : animeUrl.split('/').filter(Boolean).pop();
         
@@ -32,7 +31,6 @@ async function getEpisodes(animeUrl) {
         try {
             htmlRes = await axios.get(seriesUrl, { headers, timeout: 10000 });
         } catch (err) {
-            // If /series/slug fails, try just /slug/
             console.log(`[Debug] Series URL failed, trying fallback: ${BASE_URL}/${slug}/`);
             seriesUrl = `${BASE_URL}/${slug}/`;
             htmlRes = await axios.get(seriesUrl, { headers, timeout: 10000 });
@@ -41,19 +39,17 @@ async function getEpisodes(animeUrl) {
         const $ = cheerio.load(htmlRes.data);
         const episodes = [];
         
-        // Find episode links on the series page
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
                 const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
                 const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
-                                if (!episodes.find(ep => ep.url === href)) {
+                
+                if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
-                }
-            }
+                }            }
         });
 
-        // Fallback: If no episodes found on series page, assume the provided URL is the target
         if (episodes.length === 0) {
             console.log(`[Debug] No episodes found on series page. Assuming the provided URL is the target.`);
             const epNumMatch = animeUrl.match(/(?:-episode-|-ep-)(\d+)/i);
@@ -79,24 +75,45 @@ async function getVideoSourceUrl(episodeUrl) {
     
     let browser;
     try {
-browser = await puppeteer.launch({
-    headless: true, // Changed from "new" to standard headless for better VPS compatibility
-    dumpio: true,   // CRITICAL: Prints Chrome's internal crash logs to your terminal
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', // Prevents /dev/shm memory crashes
-        '--disable-gpu',
-        '--single-process',        // Forces Chrome to run in a single process (saves RAM)
-        '--no-zygote',             // Disables the zygote process (fixes VPS launch crashes)
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--no-first-run'
-    ],
-    timeout: 60000 // Increased timeout to 60 seconds
-});
+        // 1. Launch browser with VPS-optimized flags
+        browser = await puppeteer.launch({
+            headless: true, 
+            dumpio: true,   // Prints Chrome's internal logs to terminal
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', 
+                '--disable-gpu',
+                '--single-process',        
+                '--no-zygote',             
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--no-first-run'
+            ],
+            timeout: 60000 
+        });
 
-        // WordPress anime themes often hide the player behind a "Click to Play" button
+        // 2. Create the page (This was missing in your previous edit!)
+        const page = await browser.newPage();
+        await page.setUserAgent(headers['User-Agent']);
+        await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
+        let videoUrl = null;
+
+        // 3. Intercept network requests on the main page
+        page.on('response', async (response) => {
+            const url = response.url();
+            if (url.includes('.m3u8') || url.includes('.mp4')) {
+                if (!videoUrl) {
+                    videoUrl = url;
+                    console.log(`[Debug] ✅ Intercepted video URL: ${videoUrl}`);
+                }
+            }
+        });
+
+        console.log(`[Debug] Navigating to episode page...`);
+        await page.goto(episodeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // 4. Click "Play" buttons if the site hides the player
         const clickableSelectors = ['.btn-play', '.play-button', '.player-loading', 'a[href="#player"]', '.vscontrol'];
         for (const selector of clickableSelectors) {
             const el = await page.$(selector);
@@ -107,9 +124,8 @@ browser = await puppeteer.launch({
             }
         }
 
-        // Find the iframe or video source URL
+        // 5. Find the iframe or video source URL
         const iframeUrl = await page.evaluate(() => {
-            // 1. Check for direct iframes in the page
             const iframes = document.querySelectorAll('iframe');
             for (let iframe of iframes) {
                 if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook')) {
@@ -117,44 +133,36 @@ browser = await puppeteer.launch({
                 }
             }
             
-            // 2. Check for base64 encoded iframes in dropdowns (common in WP anime themes)
             const options = document.querySelectorAll('select option');
             for (let opt of options) {
                 const val = opt.value;
                 if (val && val.length > 50) {
                     try {
-                        // Use native browser atob instead of Node's Buffer
                         const decoded = atob(val); 
                         const match = decoded.match(/src="([^"]+)"/);
-                        if (match && match[1]) {
-                            return match[1];
-                        }
+                        if (match && match[1]) return match[1];
                     } catch (e) {}
                 }
             }
             
-            // 3. Check for data attributes on links
-            const links = document.querySelectorAll('a[data-video], a[data-src], a[data-embed]');
-            for (let link of links) {
+            const links = document.querySelectorAll('a[data-video], a[data-src], a[data-embed]');            for (let link of links) {
                 const src = link.getAttribute('data-video') || link.getAttribute('data-src') || link.getAttribute('data-embed');
                 if (src && src.startsWith('http')) return src;
             }
-            // 4. Check for direct video tags
+
             const videos = document.querySelectorAll('video source, video');
             for (let vid of videos) {
                 const src = vid.src || vid.getAttribute('src');
-                if (src && (src.includes('.mp4') || src.includes('.m3u8'))) {
-                    return src;
-                }
+                if (src && (src.includes('.mp4') || src.includes('.m3u8'))) return src;
             }
 
             return null;
         });
 
+        // 6. If an iframe was found, open it in a new tab to intercept its network requests
         if (iframeUrl) {
             console.log(`[Debug] ✅ Found iframe/video source: ${iframeUrl}`);
 
-            // Open the iframe in a new page to intercept its network requests
             const iframePage = await browser.newPage();
             await iframePage.setUserAgent(headers['User-Agent']);
             await iframePage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
@@ -175,7 +183,7 @@ browser = await puppeteer.launch({
             console.log(`[Debug] ⚠️ No iframe found. Relying solely on main page network interception.`);
         }
 
-        // Wait a few seconds for the video player to initialize and request the stream
+        // 7. Wait for the video player to initialize and request the stream
         console.log(`[Debug] Waiting for video player to load...`);
         await new Promise(resolve => setTimeout(resolve, 5000));
 
@@ -186,8 +194,8 @@ browser = await puppeteer.launch({
         return videoUrl;
 
     } catch (error) {
-        console.error('Video Source Error:', error.message);
-        throw new Error(`Failed to extract video URL: ${error.message}`);    } finally {
+        console.error('Video Source Error:', error.message);        throw new Error(`Failed to extract video URL: ${error.message}`);
+    } finally {
         if (browser) {
             await browser.close();
         }
