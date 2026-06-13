@@ -79,29 +79,22 @@ async function getVideoSourceUrl(episodeUrl) {
     
     let browser;
     try {
-        browser = await puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-        });
-
-        const page = await browser.newPage();
-        await page.setUserAgent(headers['User-Agent']);
-        await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
-
-        let videoUrl = null;
-
-        // Intercept network requests on the main page
-        page.on('response', async (response) => {
-            const url = response.url();
-            if (url.includes('.m3u8') || url.includes('.mp4')) {
-                if (!videoUrl) {
-                    videoUrl = url;
-                    console.log(`[Debug] ✅ Intercepted video URL: ${videoUrl}`);                }
-            }
-        });
-
-        console.log(`[Debug] Navigating to episode page...`);
-        await page.goto(episodeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+browser = await puppeteer.launch({
+    headless: true, // Changed from "new" to standard headless for better VPS compatibility
+    dumpio: true,   // CRITICAL: Prints Chrome's internal crash logs to your terminal
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage', // Prevents /dev/shm memory crashes
+        '--disable-gpu',
+        '--single-process',        // Forces Chrome to run in a single process (saves RAM)
+        '--no-zygote',             // Disables the zygote process (fixes VPS launch crashes)
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--no-first-run'
+    ],
+    timeout: 60000 // Increased timeout to 60 seconds
+});
 
         // WordPress anime themes often hide the player behind a "Click to Play" button
         const clickableSelectors = ['.btn-play', '.play-button', '.player-loading', 'a[href="#player"]', '.vscontrol'];
