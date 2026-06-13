@@ -11,9 +11,6 @@ const headers = {
     'Referer': `${BASE_URL}/`
 };
 
-/**
- * Extracts the list of episodes from the WordPress series page
- */
 async function getEpisodes(animeUrl) {
     try {
         console.log(`[Debug] Fetching anime page: ${animeUrl}`);
@@ -47,9 +44,9 @@ async function getEpisodes(animeUrl) {
                 
                 if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
-                }            }
+                }
+            }
         });
-
         if (episodes.length === 0) {
             console.log(`[Debug] No episodes found on series page. Assuming the provided URL is the target.`);
             const epNumMatch = animeUrl.match(/(?:-episode-|-ep-)(\d+)/i);
@@ -66,19 +63,14 @@ async function getEpisodes(animeUrl) {
     }
 }
 
-/**
- * Uses Puppeteer to load the episode page, find the video iframe/source, 
- * and intercept the .m3u8 or .mp4 video URL from the network traffic.
- */
 async function getVideoSourceUrl(episodeUrl) {
     console.log(`[Debug] Launching Puppeteer to extract video URL from: ${episodeUrl}`);
     
     let browser;
     try {
-        // 1. Launch browser with VPS-optimized flags
         browser = await puppeteer.launch({
             headless: true, 
-            dumpio: true,   // Prints Chrome's internal logs to terminal
+            dumpio: false, // Turned off to keep terminal clean and speed up I/O
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -88,18 +80,32 @@ async function getVideoSourceUrl(episodeUrl) {
                 '--no-zygote',             
                 '--disable-extensions',
                 '--disable-background-networking',
-                '--no-first-run'
+                '--disable-default-apps',
+                '--no-first-run',
+                '--disable-sync',
+                '--disable-translate',
+                '--metrics-recording-only'
             ],
-            timeout: 60000 
+            timeout: 30000 
         });
 
-        // 2. Create the page (This was missing in your previous edit!)
         const page = await browser.newPage();
+        
+        // Block images, fonts, and unnecessary resources to speed up loading by 50%+
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                req.abort();
+            } else {                req.continue();
+            }
+        });
+
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
+
         let videoUrl = null;
 
-        // 3. Intercept network requests on the main page
+        // Intercept network requests immediately
         page.on('response', async (response) => {
             const url = response.url();
             if (url.includes('.m3u8') || url.includes('.mp4')) {
@@ -110,25 +116,23 @@ async function getVideoSourceUrl(episodeUrl) {
             }
         });
 
-        console.log(`[Debug] Navigating to episode page...`);
-        await page.goto(episodeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        console.log(`[Debug] Navigating to episode page (fast mode)...`);
+        // CRITICAL CHANGE: Use 'domcontentloaded' instead of 'networkidle2'
+        await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // 4. Click "Play" buttons if the site hides the player
-        const clickableSelectors = ['.btn-play', '.play-button', '.player-loading', 'a[href="#player"]', '.vscontrol'];
-        for (const selector of clickableSelectors) {
-            const el = await page.$(selector);
-            if (el) {
-                console.log(`[Debug] Clicking element to load player: ${selector}`);
-                await el.click();
-                await new Promise(resolve => setTimeout(resolve, 2000));
+        // Quick click on play buttons if they exist
+        try {
+            const playBtn = await page.$('.btn-play, .play-button, a[href="#player"]');
+            if (playBtn) {
+                await playBtn.click().catch(() => {}); // Ignore if unclickable
             }
-        }
+        } catch (e) {}
 
-        // 5. Find the iframe or video source URL
+        // Find the iframe or video source URL
         const iframeUrl = await page.evaluate(() => {
             const iframes = document.querySelectorAll('iframe');
             for (let iframe of iframes) {
-                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook')) {
+                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook') && !iframe.src.includes('google')) {
                     return iframe.src;
                 }
             }
@@ -141,29 +145,26 @@ async function getVideoSourceUrl(episodeUrl) {
                         const decoded = atob(val); 
                         const match = decoded.match(/src="([^"]+)"/);
                         if (match && match[1]) return match[1];
-                    } catch (e) {}
-                }
+                    } catch (e) {}                }
             }
-            
-            const links = document.querySelectorAll('a[data-video], a[data-src], a[data-embed]');            for (let link of links) {
-                const src = link.getAttribute('data-video') || link.getAttribute('data-src') || link.getAttribute('data-embed');
-                if (src && src.startsWith('http')) return src;
-            }
-
-            const videos = document.querySelectorAll('video source, video');
-            for (let vid of videos) {
-                const src = vid.src || vid.getAttribute('src');
-                if (src && (src.includes('.mp4') || src.includes('.m3u8'))) return src;
-            }
-
             return null;
         });
 
-        // 6. If an iframe was found, open it in a new tab to intercept its network requests
         if (iframeUrl) {
-            console.log(`[Debug] ✅ Found iframe/video source: ${iframeUrl}`);
+            console.log(`[Debug] ✅ Found iframe: ${iframeUrl}`);
 
             const iframePage = await browser.newPage();
+            
+            // Also block heavy resources in the iframe
+            await iframePage.setRequestInterception(true);
+            iframePage.on('request', (req) => {
+                if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                    req.abort();
+                } else {
+                    req.continue();
+                }
+            });
+
             await iframePage.setUserAgent(headers['User-Agent']);
             await iframePage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
 
@@ -177,25 +178,23 @@ async function getVideoSourceUrl(episodeUrl) {
                 }
             });
 
-            console.log(`[Debug] Navigating to iframe...`);
-            await iframePage.goto(iframeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-        } else {
-            console.log(`[Debug] ⚠️ No iframe found. Relying solely on main page network interception.`);
+            console.log(`[Debug] Navigating to iframe (fast mode)...`);
+            await iframePage.goto(iframeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         }
 
-        // 7. Wait for the video player to initialize and request the stream
-        console.log(`[Debug] Waiting for video player to load...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Short wait just to ensure the player JS has time to fire the .m3u8 request
+        console.log(`[Debug] Waiting briefly for player initialization...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         if (!videoUrl) {
-            throw new Error('Could not intercept .m3u8 or .mp4 URL. The site might be using a new player or blocking Puppeteer.');
+            throw new Error('Could not intercept .m3u8 or .mp4 URL. The site might be blocking Puppeteer or using a new player.');
         }
 
         return videoUrl;
 
     } catch (error) {
-        console.error('Video Source Error:', error.message);        throw new Error(`Failed to extract video URL: ${error.message}`);
-    } finally {
+        console.error('Video Source Error:', error.message);
+        throw new Error(`Failed to extract video URL: ${error.message}`);    } finally {
         if (browser) {
             await browser.close();
         }
