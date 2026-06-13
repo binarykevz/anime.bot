@@ -1,6 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const { handleStart, handleSearch, handleAutoBatch } = require('./handlers');
+const { handleStart, handleSearch, handleEpisodes, handleUpload } = require('./handlers');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -15,9 +15,8 @@ console.log('✅ Bot is running...');
 // --- Handlers ---
 bot.onText(/\/start/, (msg) => handleStart(bot, msg));
 bot.onText(/\/search(?:@\w+)?\s*(.*)/, (msg, match) => handleSearch(bot, msg, match));
-
-// Matches: /auto https://... 1 5
-bot.onText(/\/auto(?:@\w+)?\s+(\S+)(?:\s+(\d+))?(?:\s+(\d+))?/, (msg, match) => handleAutoBatch(bot, msg, match));
+bot.onText(/\/episodes(?:@\w+)?\s*(.*)/, (msg, match) => handleEpisodes(bot, msg, match));
+bot.onText(/\/upload(?:@\w+)?\s*(.*)/, (msg, match) => handleUpload(bot, msg, match));
 
 // Graceful shutdown
 process.on('SIGINT', () => {
