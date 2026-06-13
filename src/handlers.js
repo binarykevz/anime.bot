@@ -89,7 +89,7 @@ async function handleUpload(bot, msg, match) {
 
     try {
         // 1. Extract Episode ID from URL (Assuming URL contains ?id= or /ep/)
-        const epIdMatch = episodeUrl.match(/id=(\d+)/) || episodeUrl.match(/\/(\d+)(?:\?|$)/);
+        const epIdMatch = episodeUrl.match(/id=(\d+)/) || episodeUrl.match(/\/(\d+)(/([\w\W]+)/);
         if (!epIdMatch) throw new Error('Invalid episode URL format.');
         const episodeId = epIdMatch[1];
 
