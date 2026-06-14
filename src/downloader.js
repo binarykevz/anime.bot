@@ -121,7 +121,7 @@ async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeU
     
     console.log('[yt-dlp] ❌ ALL ATTEMPTS FAILED.');
     throw new Error('Download failed. All dynamic proxies returned 403 or timed out. The video URL might be expired.');
-}
+
 
 function cleanupTempFile(filePath) {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
