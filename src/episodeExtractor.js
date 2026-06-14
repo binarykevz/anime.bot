@@ -64,7 +64,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (Safe Extraction) for: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (100% Safe Passive Mode) for: ${episodeUrl}`);
     
     let browser;
     try {
@@ -91,22 +91,13 @@ async function getVideoSourceUrl(episodeUrl) {
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
 
-        // 🛡️ SAFE RESOURCE BLOCKER: Only blocks heavy assets, NEVER blocks scripts or API calls
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (req.isInterceptResolutionHandled()) return;
-            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
-                return req.abort();            }
-            return req.continue();
-        });
-
+        // 🚀 NO setRequestInterception! We only use passive CDP listening to guarantee zero blocking.
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
 
         let videoUrl = null;
         let playerUrl = null;
-
-        // 🚀 MAIN PAGE CDP LISTENER
+        // 🚀 MAIN PAGE PASSIVE LISTENER
         client.on('Network.responseReceived', (event) => {
             const url = event.response.url;
             const type = event.type;
@@ -145,6 +136,7 @@ async function getVideoSourceUrl(episodeUrl) {
         }).catch(() => {});
 
         await new Promise(resolve => setTimeout(resolve, 3000));
+
         if (videoUrl) {
             console.log(`[Debug] ⏭️ Success: Direct video URL captured!`);
             return videoUrl;
@@ -153,24 +145,14 @@ async function getVideoSourceUrl(episodeUrl) {
         // 🚀 IF WE FOUND THE PLAYER HOST, OPEN IT IN A NEW TAB
         if (playerUrl) {
             console.log(`[Debug] Opening Video Host in new tab: ${playerUrl}`);
-            const playerPage = await browser.newPage();
-            
+            const playerPage = await browser.newPage();            
             await playerPage.evaluateOnNewDocument(() => {
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
             });
             await playerPage.setUserAgent(headers['User-Agent']);
             await playerPage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
             
-            // 🛡️ SAFE RESOURCE BLOCKER for the player page too
-            await playerPage.setRequestInterception(true);
-            playerPage.on('request', (req) => {
-                if (req.isInterceptResolutionHandled()) return;
-                if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
-                    return req.abort();
-                }
-                return req.continue();
-            });
-
+            // 🚀 NO setRequestInterception here either! 100% safe.
             const playerClient = await playerPage.target().createCDPSession();
             await playerClient.send('Network.enable');
 
@@ -194,7 +176,8 @@ async function getVideoSourceUrl(episodeUrl) {
                 if (btn) btn.click();
             }).catch(() => {});
 
-            // Wait for the stream to start            await new Promise(resolve => setTimeout(resolve, 5000));
+            // Wait for the stream to start
+            await new Promise(resolve => setTimeout(resolve, 5000));
             
             if (videoUrl) {
                 console.log(`[Debug] ⏭️ Success: Video URL captured from player host!`);
@@ -211,7 +194,6 @@ async function getVideoSourceUrl(episodeUrl) {
         if (browser) {
             await browser.close();
         }
-    }
-}
+    }}
 
 module.exports = { getEpisodes, getVideoSourceUrl };
