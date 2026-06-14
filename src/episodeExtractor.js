@@ -11,13 +11,6 @@ const headers = {
     'Referer': `${BASE_URL}/`
 };
 
-const BLOCKED_URLS = [
-    '*doubleclick.net*', '*googlesyndication.com*', '*adservice.google.com*',
-    '*popads.net*', '*popcash.net*', '*adnxs.com*', '*advertising.com*',
-    '*google-analytics.com*', '*googletagmanager.com*', '*propellerads*', 
-    '*exoclick*', '*juicyads*'
-];
-
 async function getEpisodes(animeUrl) {
     try {
         console.log(`[Debug] Fetching anime page: ${animeUrl}`);
@@ -47,13 +40,13 @@ async function getEpisodes(animeUrl) {
             const href = $(el).attr('href');
             if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
                 const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
-                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;                
+                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
+                
                 if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
                 }
             }
         });
-
         if (episodes.length === 0) {
             console.log(`[Debug] No episodes found on series page. Assuming the provided URL is the target.`);
             const epNumMatch = animeUrl.match(/(?:-episode-|-ep-)(\d+)/i);
@@ -71,7 +64,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (Targeted Megaplay Extraction) for: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (Safe Extraction) for: ${episodeUrl}`);
     
     let browser;
     try {
@@ -97,9 +90,18 @@ async function getVideoSourceUrl(episodeUrl) {
 
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
+
+        // 🛡️ SAFE RESOURCE BLOCKER: Only blocks heavy assets, NEVER blocks scripts or API calls
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (req.isInterceptResolutionHandled()) return;
+            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                return req.abort();            }
+            return req.continue();
+        });
+
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
-        await client.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
 
         let videoUrl = null;
         let playerUrl = null;
@@ -111,7 +113,7 @@ async function getVideoSourceUrl(episodeUrl) {
             
             // 1. Catch direct video files
             if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
-                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff') && !url.includes('.css') && !url.includes('.js')) {
+                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
                     if (!videoUrl) {
                         videoUrl = url;
                         console.log(`[Debug] ✅ Intercepted direct video URL: ${videoUrl}`);
@@ -143,9 +145,9 @@ async function getVideoSourceUrl(episodeUrl) {
         }).catch(() => {});
 
         await new Promise(resolve => setTimeout(resolve, 3000));
-
         if (videoUrl) {
-            console.log(`[Debug] ⏭️ Success: Direct video URL captured!`);            return videoUrl;
+            console.log(`[Debug] ⏭️ Success: Direct video URL captured!`);
+            return videoUrl;
         }
 
         // 🚀 IF WE FOUND THE PLAYER HOST, OPEN IT IN A NEW TAB
@@ -159,9 +161,18 @@ async function getVideoSourceUrl(episodeUrl) {
             await playerPage.setUserAgent(headers['User-Agent']);
             await playerPage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
             
+            // 🛡️ SAFE RESOURCE BLOCKER for the player page too
+            await playerPage.setRequestInterception(true);
+            playerPage.on('request', (req) => {
+                if (req.isInterceptResolutionHandled()) return;
+                if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                    return req.abort();
+                }
+                return req.continue();
+            });
+
             const playerClient = await playerPage.target().createCDPSession();
             await playerClient.send('Network.enable');
-            await playerClient.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
 
             playerClient.on('Network.responseReceived', (event) => {
                 const url = event.response.url;
@@ -183,8 +194,7 @@ async function getVideoSourceUrl(episodeUrl) {
                 if (btn) btn.click();
             }).catch(() => {});
 
-            // Wait for the stream to start
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            // Wait for the stream to start            await new Promise(resolve => setTimeout(resolve, 5000));
             
             if (videoUrl) {
                 console.log(`[Debug] ⏭️ Success: Video URL captured from player host!`);
@@ -194,7 +204,8 @@ async function getVideoSourceUrl(episodeUrl) {
 
         throw new Error('Could not intercept video URL from main page or player host.');
 
-    } catch (error) {        console.error('Video Source Error:', error.message);
+    } catch (error) {
+        console.error('Video Source Error:', error.message);
         throw new Error(`Failed to extract video URL: ${error.message}`);
     } finally {
         if (browser) {
