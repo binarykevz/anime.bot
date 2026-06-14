@@ -16,7 +16,8 @@ const BLOCKED_DOMAINS = new Set([
     'doubleclick.net', 'googlesyndication.com', 'adservice.google.com',
     'popads.net', 'popcash.net', 'adnxs.com', 'advertising.com',
     'analytics', 'tracker', 'telemetry', 'beacon', 'metric',
-    'facebook.com/tr', 'google-analytics.com', 'googletagmanager.com'
+    'facebook.com/tr', 'google-analytics.com', 'googletagmanager.com',
+    'propellerads', 'exoclick', 'juicyads'
 ]);
 
 async function getEpisodes(animeUrl) {
@@ -38,7 +39,7 @@ async function getEpisodes(animeUrl) {
         } catch (err) {
             console.log(`[Debug] Series URL failed, trying fallback: ${BASE_URL}/${slug}/`);
             seriesUrl = `${BASE_URL}/${slug}/`;
-            htmlRes = await axios.get(seriesUrl, { headers, timeout: 10000 });
+            htmlRes = await axios.get(seriesUrl, { headers, timeout:10000 });
         }
         
         const $ = cheerio.load(htmlRes.data);
@@ -46,8 +47,8 @@ async function getEpisodes(animeUrl) {
         
         $('a').each((i, el) => {
             const href = $(el).attr('href');
-            if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
-                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
+            if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
+                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
                 
                 if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
@@ -95,28 +96,31 @@ async function getVideoSourceUrl(episodeUrl) {
             ],
             timeout: 30000 
         });
-
-        const page = await browser.newPage();        
-        // 🛡️ ADVANCED ADBLOCKER & RESOURCE BLOCKER
+        const page = await browser.newPage();
+        
+        // 🛡️ ADVANCED ADBLOCKER & RESOURCE BLOCKER (With Race Condition Fix)
         await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            const url = req.url().toLowerCase();
-            const resourceType = req.resourceType();
+        page.on('request', (request) => {
+            // CRITICAL FIX: Skip if the browser has already resolved this request (prevents "main frame too early" error)
+            if (request.isInterceptResolutionHandled()) return;
+
+            const url = request.url().toLowerCase();
+            const resourceType = request.resourceType();
             
             // 1. Block heavy, non-essential resources immediately
             if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                return req.abort();
+                return request.abort();
             }
             
             // 2. Block known ad networks, trackers, and analytics
             for (const blocked of BLOCKED_DOMAINS) {
                 if (url.includes(blocked)) {
-                    return req.abort();
+                    return request.abort();
                 }
             }
             
             // Allow everything else (HTML, JS, XHR, Fetch, WebSocket)
-            req.continue();
+            return request.continue();
         });
 
         await page.setUserAgent(headers['User-Agent']);
@@ -141,11 +145,11 @@ async function getVideoSourceUrl(episodeUrl) {
         console.log(`[Debug] Navigating to episode page (fast + adblocked)...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Quick click on play buttons if they exist
-        try {
+        // Quick click on play buttons if they exist        try {
             const playBtn = await page.$('.btn-play, .play-button, a[href="#player"], .vscontrol');
             if (playBtn) {
-                await playBtn.click().catch(() => {});             }
+                await playBtn.click().catch(() => {}); 
+            }
         } catch (e) {}
 
         // Find the iframe or video source URL
@@ -176,25 +180,27 @@ async function getVideoSourceUrl(episodeUrl) {
 
             const iframePage = await browser.newPage();
             
-            // 🛡️ Apply the SAME AdBlocker to the iframe page
+            // 🛡️ Apply the SAME AdBlocker (with race condition fix) to the iframe page
             await iframePage.setRequestInterception(true);
-            iframePage.on('request', (req) => {
-                const url = req.url().toLowerCase();
-                const resourceType = req.resourceType();
+            iframePage.on('request', (request) => {
+                if (request.isInterceptResolutionHandled()) return;
+
+                const url = request.url().toLowerCase();
+                const resourceType = request.resourceType();
                 
                 if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                    return req.abort();
+                    return request.abort();
                 }
                 for (const blocked of BLOCKED_DOMAINS) {
                     if (url.includes(blocked)) {
-                        return req.abort();
-                    }
-                }
-                req.continue();
+                        return request.abort();
+                    }                }
+                return request.continue();
             });
 
             await iframePage.setUserAgent(headers['User-Agent']);
             await iframePage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
+
             iframePage.on('response', async (response) => {
                 const url = response.url();
                 if (url.includes('.m3u8') || url.includes('.mp4')) {
