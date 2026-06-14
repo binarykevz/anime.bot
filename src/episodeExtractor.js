@@ -11,13 +11,13 @@ const headers = {
     'Referer': `${BASE_URL}/`
 };
 
-const BLOCKED_DOMAINS = new Set([
-    'doubleclick.net', 'googlesyndication.com', 'adservice.google.com',
-    'popads.net', 'popcash.net', 'adnxs.com', 'advertising.com',
-    'analytics', 'tracker', 'telemetry', 'beacon', 'metric',
-    'facebook.com/tr', 'google-analytics.com', 'googletagmanager.com',
-    'propellerads', 'exoclick', 'juicyads'
-]);
+// 🛡️ CDP Blocklist: Wildcards are supported natively by Chrome
+const BLOCKED_URLS = [
+    '*doubleclick.net*', '*googlesyndication.com*', '*adservice.google.com*',
+    '*popads.net*', '*popcash.net*', '*adnxs.com*', '*advertising.com*',
+    '*google-analytics.com*', '*googletagmanager.com*', '*propellerads*', 
+    '*exoclick*', '*juicyads*', '*analytics*', '*tracker*'
+];
 
 async function getEpisodes(animeUrl) {
     try {
@@ -72,7 +72,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (with AdBlocker) to extract video URL from: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (CDP AdBlocker) to extract video URL from: ${episodeUrl}`);
     
     let browser;
     try {
@@ -96,56 +96,45 @@ async function getVideoSourceUrl(episodeUrl) {
             timeout: 30000 
         });
 
-        const page = await browser.newPage();        
-        await page.setRequestInterception(true);
-        page.on('request', (request) => {
-            if (request.isInterceptResolutionHandled()) return;
-
-            const url = request.url().toLowerCase();
-            const resourceType = request.resourceType();
-            
-            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                return request.abort();
-            }
-            
-            for (const blocked of BLOCKED_DOMAINS) {
-                if (url.includes(blocked)) {
-                    return request.abort();
-                }
-            }
-            
-            return request.continue();
-        });
-
-        await page.setUserAgent(headers['User-Agent']);
+        const page = await browser.newPage();        await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
+
+        // 🚀 CDP SETUP: The bulletproof way to block ads without race conditions
+        const client = await page.target().createCDPSession();
+        await client.send('Network.enable');
+        
+        // Block ads at the browser engine level (No Node.js interception lag!)
+        await client.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
 
         let videoUrl = null;
 
-        page.on('response', async (response) => {
-            const url = response.url();
+        // Listen for network responses to catch the .m3u8 or .mp4
+        client.on('Network.responseReceived', (event) => {
+            const url = event.response.url;
             if (url.includes('.m3u8') || url.includes('.mp4')) {
                 if (url.length > 30 && !url.includes('ads') && !url.includes('tracking')) {
                     if (!videoUrl) {
                         videoUrl = url;
-                        console.log(`[Debug] ✅ Intercepted video URL: ${videoUrl}`);
+                        console.log(`[Debug] ✅ Intercepted video URL via CDP: ${videoUrl}`);
                     }
                 }
             }
         });
 
-        console.log(`[Debug] Navigating to episode page (fast + adblocked)...`);
+        console.log(`[Debug] Navigating to episode page (fast + CDP adblocked)...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Simplified play button click (no nested try-catch to prevent syntax errors)
+        // Quick click on play buttons if they exist
         const playBtn = await page.$('.btn-play, .play-button, a[href="#player"], .vscontrol');
         if (playBtn) {
             await playBtn.click().catch(() => {}); 
         }
 
+        // Find the iframe or video source URL
         const iframeUrl = await page.evaluate(() => {
             const iframes = document.querySelectorAll('iframe');
-            for (let iframe of iframes) {                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook') && !iframe.src.includes('google')) {
+            for (let iframe of iframes) {
+                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook') && !iframe.src.includes('google')) {
                     return iframe.src;
                 }
             }
@@ -156,8 +145,7 @@ async function getVideoSourceUrl(episodeUrl) {
                 if (val && val.length > 50) {
                     try {
                         const decoded = atob(val); 
-                        const match = decoded.match(/src="([^"]+)"/);
-                        if (match && match[1]) return match[1];
+                        const match = decoded.match(/src="([^"]+)"/);                        if (match && match[1]) return match[1];
                     } catch (e) {}
                 }
             }
@@ -168,43 +156,31 @@ async function getVideoSourceUrl(episodeUrl) {
             console.log(`[Debug] ✅ Found iframe: ${iframeUrl}`);
 
             const iframePage = await browser.newPage();
-            
-            await iframePage.setRequestInterception(true);
-            iframePage.on('request', (request) => {
-                if (request.isInterceptResolutionHandled()) return;
-
-                const url = request.url().toLowerCase();
-                const resourceType = request.resourceType();
-                
-                if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                    return request.abort();
-                }
-                for (const blocked of BLOCKED_DOMAINS) {
-                    if (url.includes(blocked)) {
-                        return request.abort();
-                    }
-                }
-                return request.continue();
-            });
-
             await iframePage.setUserAgent(headers['User-Agent']);
             await iframePage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
 
-            iframePage.on('response', async (response) => {
-                const url = response.url();
+            // 🚀 Apply SAME CDP AdBlocker to the iframe page
+            const iframeClient = await iframePage.target().createCDPSession();
+            await iframeClient.send('Network.enable');
+            await iframeClient.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
+
+            iframeClient.on('Network.responseReceived', (event) => {
+                const url = event.response.url;
                 if (url.includes('.m3u8') || url.includes('.mp4')) {
                     if (url.length > 30 && !url.includes('ads') && !url.includes('tracking')) {
-                        if (!videoUrl) {                            videoUrl = url;
-                            console.log(`[Debug] ✅ Intercepted video URL from iframe: ${videoUrl}`);
+                        if (!videoUrl) {
+                            videoUrl = url;
+                            console.log(`[Debug] ✅ Intercepted video URL from iframe via CDP: ${videoUrl}`);
                         }
                     }
                 }
             });
 
-            console.log(`[Debug] Navigating to iframe (fast + adblocked)...`);
+            console.log(`[Debug] Navigating to iframe (fast + CDP adblocked)...`);
             await iframePage.goto(iframeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         }
 
+        // Short wait to ensure the player JS has time to fire the .m3u8 request
         console.log(`[Debug] Waiting briefly for player initialization...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -218,8 +194,7 @@ async function getVideoSourceUrl(episodeUrl) {
         console.error('Video Source Error:', error.message);
         throw new Error(`Failed to extract video URL: ${error.message}`);
     } finally {
-        if (browser) {
-            await browser.close();
+        if (browser) {            await browser.close();
         }
     }
 }
