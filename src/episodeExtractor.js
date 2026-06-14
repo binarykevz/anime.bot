@@ -64,7 +64,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (Axios-First Strategy) for: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (Trojan Horse Strategy) for: ${episodeUrl}`);
     
     let browser;
     try {
@@ -91,7 +91,6 @@ async function getVideoSourceUrl(episodeUrl) {
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
 
-        // NO setRequestInterception! We only use passive CDP listening.
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
 
@@ -102,7 +101,6 @@ async function getVideoSourceUrl(episodeUrl) {
             const url = event.response.url;
             const type = event.type;
             
-            // 1. Catch direct video files
             if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
                 if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
                     if (!videoUrl) {
@@ -112,7 +110,6 @@ async function getVideoSourceUrl(episodeUrl) {
                 }
             }
             
-            // 2. Catch the video host document (e.g., megaplay.buzz)
             if (type === 'Document' && !url.includes('anikai.watch') && !url.includes('cloudflare') && !url.includes('google')) {
                 if (url.includes('megaplay') || url.includes('stream') || url.includes('player') || url.includes('video') || url.includes('embed') || url.includes('buzz')) {
                     if (!playerUrl) {
@@ -140,78 +137,103 @@ async function getVideoSourceUrl(episodeUrl) {
             return videoUrl;
         }
 
-        // 🚀 NEW STRATEGY: IF WE FOUND THE PLAYER HOST, FETCH IT WITH AXIOS FIRST
+        // 🚀 TROJAN HORSE STRATEGY: Use Axios to parse the blocked /stream/ URL
         if (playerUrl) {
-            console.log(`[Debug] Attempting to fetch Video Host via Axios (Bypasses Puppeteer blocks): ${playerUrl}`);
+            console.log(`[Debug] Fetching player HTML via Axios (Bypasses Chrome block): ${playerUrl}`);
             try {
                 const playerRes = await axios.get(playerUrl, {
-                    headers: {                        'User-Agent': headers['User-Agent'],
-                        'Referer': episodeUrl,
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                    },
+                    headers: { ...headers, Referer: episodeUrl },
                     timeout: 10000
                 });
-                
-                const playerHtml = playerRes.data;
-                
-                // Regex to find .m3u8 or .mp4 URLs in the HTML source
+                                const playerHtml = playerRes.data;
+                const $p = cheerio.load(playerHtml);
+                let embedUrl = null;
+
+                // 1. Find direct video links in the HTML
                 const videoMatch = playerHtml.match(/(https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)[^\s"'<>\\]*)/);
-                if (videoMatch && videoMatch[1]) {
+                if (videoMatch) {
                     videoUrl = videoMatch[1].replace(/\\/g, '');
-                    console.log(`[Debug] ✅ Extracted video URL from player HTML via Axios: ${videoUrl}`);
+                    console.log(`[Debug] ✅ Found direct video URL in player HTML: ${videoUrl}`);
                     return videoUrl;
                 }
-                console.log(`[Debug] ⚠️ Axios fetched the page, but no video URL found in HTML.`);
+
+                // 2. Find iframes
+                $p('iframe').each((i, el) => {
+                    const src = $p(el).attr('src') || $p(el).attr('data-src');
+                    if (src && src.includes('http') && !src.includes('youtube') && !src.includes('google') && !src.includes('anikai')) {
+                        embedUrl = src;
+                    }
+                });
+
+                // 3. Find base64 encoded iframes in scripts
+                if (!embedUrl) {
+                    $p('script').each((i, el) => {
+                        const text = $p(el).html();
+                        if (text && text.includes('atob')) {
+                            const matches = text.match(/atob\(['"]([A-Za-z0-9+/=]+)['"]\)/g);
+                            if (matches) {
+                                for (const match of matches) {
+                                    const b64 = match.match(/atob\(['"]([A-Za-z0-9+/=]+)['"]\)/)[1];
+                                    try {
+                                        const decoded = Buffer.from(b64, 'base64').toString('utf-8');
+                                        const iframeMatch = decoded.match(/src="([^"]+)"/);
+                                        if (iframeMatch && iframeMatch[1].includes('http')) {
+                                            embedUrl = iframeMatch[1];
+                                            break;
+                                        }
+                                    } catch (e) {}
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (embedUrl) {
+                    console.log(`[Debug] ✅ Found real embed URL: ${embedUrl}`);
+                    
+                    // 🚀 NOW load the EMBED URL in Puppeteer (This avoids the ERR_BLOCKED_BY_CLIENT bug!)
+                    const playerPage = await browser.newPage();
+                    
+                    await playerPage.evaluateOnNewDocument(() => {                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                    });
+                    await playerPage.setUserAgent(headers['User-Agent']);
+                    await playerPage.setExtraHTTPHeaders({ 'Referer': playerUrl });
+                    
+                    const playerClient = await playerPage.target().createCDPSession();
+                    await playerClient.send('Network.enable');
+
+                    playerClient.on('Network.responseReceived', (event) => {
+                        const url = event.response.url;
+                        if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
+                            if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
+                                if (!videoUrl) {
+                                    videoUrl = url;
+                                    console.log(`[Debug] ✅ Intercepted video URL from embed: ${videoUrl}`);
+                                }
+                            }
+                        }
+                    });
+
+                    console.log(`[Debug] Loading embed URL in Puppeteer...`);
+                    await playerPage.goto(embedUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                    
+                    await playerPage.evaluate(() => {
+                        const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button, .plyr__control, .video-js, .center-btn');
+                        if (btn) btn.click();
+                    }).catch(() => {});
+
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    
+                    if (videoUrl) {
+                        console.log(`[Debug] ⏭️ Success: Video URL captured from embed!`);
+                        return videoUrl;
+                    }
+                } else {
+                    console.log(`[Debug] ⚠️ Could not find embed URL in player HTML.`);
+                }
+
             } catch (axiosErr) {
                 console.log(`[Debug] ⚠️ Axios failed to fetch player URL: ${axiosErr.message}`);
-            }
-            
-            // Fallback to Puppeteer if Axios fails
-            console.log(`[Debug] Falling back to Puppeteer for player host...`);
-            const playerPage = await browser.newPage();
-            
-            // EXPLICITLY CLEAR ANY INTERCEPTION TO PREVENT ERR_BLOCKED_BY_CLIENT
-            await playerPage.setRequestInterception(false);
-            
-            await playerPage.evaluateOnNewDocument(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            });
-            await playerPage.setUserAgent(headers['User-Agent']);
-            await playerPage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
-            
-            const playerClient = await playerPage.target().createCDPSession();
-            await playerClient.send('Network.enable');
-            
-            // EXPLICITLY CLEAR ANY BLOCKED URLS
-            await playerClient.send('Network.setBlockedURLs', { urls: [] });
-
-            playerClient.on('Network.responseReceived', (event) => {
-                const url = event.response.url;
-                if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
-                    if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
-                        if (!videoUrl) {
-                            videoUrl = url;
-                            console.log(`[Debug] ✅ Intercepted video URL from player host: ${videoUrl}`);
-                        }
-                    }
-                }            });
-
-            try {
-                await playerPage.goto(playerUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-                
-                await playerPage.evaluate(() => {
-                    const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button, .plyr__control, .video-js, .center-btn');
-                    if (btn) btn.click();
-                }).catch(() => {});
-
-                await new Promise(resolve => setTimeout(resolve, 5000));
-            } catch (gotoErr) {
-                console.log(`[Debug] ⚠️ Puppeteer goto failed: ${gotoErr.message}`);
-            }
-            
-            if (videoUrl) {
-                console.log(`[Debug] ⏭️ Success: Video URL captured from player host via Puppeteer fallback!`);
-                return videoUrl;
             }
         }
 
@@ -221,8 +243,7 @@ async function getVideoSourceUrl(episodeUrl) {
         console.error('Video Source Error:', error.message);
         throw new Error(`Failed to extract video URL: ${error.message}`);
     } finally {
-        if (browser) {
-            await browser.close();
+        if (browser) {            await browser.close();
         }
     }
 }
