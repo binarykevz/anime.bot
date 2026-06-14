@@ -105,15 +105,20 @@ async function handleUpload(bot, msg, match) {
         await bot.sendMessage(chatId, `📤 Initializing upload for "${filename}" (${(fileSize / 1024 / 1024).toFixed(2)} MB)...`);
         const initData = await initUpload(filename, fileSize);
         
-        const uploadUrl = initData.upload_url || initData.url || initData.presigned_url;
-        if (!uploadUrl) throw new Error('Storage API did not return an upload URL.');
+        // 🚀 DEBUG: Print the exact response from your Storage API so we can see what keys it uses
+        console.log(`[Debug] Storage API /init response:`, JSON.stringify(initData, null, 2));
+        
+        // Try multiple possible keys for the upload URL
+        const uploadUrl = initData.upload_url || initData.url || initData.presigned_url || initData.uploadUrl || (initData.data && (initData.data.upload_url || initData.data.url));
+        
+        if (!uploadUrl) throw new Error('Storage API did not return an upload URL. Check the console logs for the actual API response.');
 
         // 5. Stream to Storage API
         await bot.sendMessage(chatId, "☁️ Uploading to storage server...");
         await uploadFileToUrl(uploadUrl, tempFilePath);
 
         // 6. Extract final link
-        const finalLink = initData.file_url || initData.link || `https://storage.to/f/${initData.file_id || initData.id}`;
+        const finalLink = initData.file_url || initData.link || initData.url || initData.download_url || (initData.data && (initData.data.file_url || initData.data.link || initData.data.url)) || `https://storage.to/f/${initData.file_id || initData.id}`;
 
         await bot.sendMessage(chatId, `✅ <b>Success!</b>\nFile "<code>${escapeHtml(filename)}</code>" has been uploaded.\n🔗 <a href="${finalLink}">Download/Watch Link</a>`, { parse_mode: 'HTML', disable_web_page_preview: true });
 
