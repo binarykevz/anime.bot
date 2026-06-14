@@ -76,14 +76,15 @@ async function handleUpload(bot, msg, match) {
 
         await bot.sendChatAction(chatId, 'upload_video');
         await bot.sendMessage(chatId, "⬇️ Downloading and converting to MP4...");
-        tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, epNum);
+        
+        // 🚀 PASS THE EPISODE URL TO THE DOWNLOADER
+        tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, epNum, episodeUrl);
         
         const stats = fs.statSync(tempFilePath);
         const fileSizeMB = (stats.size / 1024 / 1024).toFixed(2);
         
         await bot.sendMessage(chatId, `⬆️ Sending ${fileSizeMB} MB directly to Telegram...`);
         
-        // 🚀 SEND DIRECTLY TO TELEGRAM
         await bot.sendVideo(chatId, tempFilePath, {
             caption: '📺 <b>' + escapeHtml(animeName) + '</b>\n🔹 Episode ' + epNum,
             parse_mode: 'HTML',
@@ -95,8 +96,8 @@ async function handleUpload(bot, msg, match) {
     } catch (error) {
         console.error('Upload Handler Error:', error);
         if (error.message.includes('413')) {
-            await bot.sendMessage(chatId, '❌ <b>Error:</b> The video file is too large for the standard Telegram Bot API (Limit is 50MB).', { parse_mode: 'HTML' });
-        } else {            await bot.sendMessage(chatId, '❌ <b>Error:</b> ' + escapeHtml(error.message), { parse_mode: 'HTML' });
+            await bot.sendMessage(chatId, '❌ <b>Error:</b> The video file is too large for the standard Telegram Bot API (Limit is 50MB).', { parse_mode: 'HTML' });        } else {
+            await bot.sendMessage(chatId, '❌ <b>Error:</b> ' + escapeHtml(error.message), { parse_mode: 'HTML' });
         }
     } finally {
         if (tempFilePath) {
@@ -133,19 +134,20 @@ async function handleAutoBatch(bot, msg, match) {
                 const videoUrl = await getVideoSourceUrl(ep.url);
                 
                 await bot.sendChatAction(chatId, 'upload_video');
-                tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, ep.number);
+                
+                // 🚀 PASS THE EPISODE URL TO THE DOWNLOADER
+                tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, ep.number, ep.url);
                 const fileSizeMB = (fs.statSync(tempFilePath).size / 1024 / 1024).toFixed(2);
                 
                 await bot.sendMessage(chatId, '⬆️ Sending Ep ' + ep.number + ' (' + fileSizeMB + ' MB)...');
                 
-                // 🚀 SEND DIRECTLY TO TELEGRAM
                 await bot.sendVideo(chatId, tempFilePath, {
                     caption: '📺 <b>' + escapeHtml(animeName) + '</b>\n🔹 Episode ' + ep.number,
                     parse_mode: 'HTML',
                     supportsStreaming: true
                 });
-
-                await bot.sendMessage(chatId, '✅ Episode ' + ep.number + ' sent!');                
+                await bot.sendMessage(chatId, '✅ Episode ' + ep.number + ' sent!');
+                
             } catch (epError) {
                 console.error('Error on Ep ' + ep.number + ':', epError);
                 await bot.sendMessage(chatId, '❌ Failed Ep ' + ep.number + ': ' + escapeHtml(epError.message), { parse_mode: 'HTML' });
