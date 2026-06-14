@@ -1,7 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
-const fs = require('fs');
 
 const BASE_URL = 'https://anikai.watch';
 
@@ -47,8 +46,8 @@ async function getEpisodes(animeUrl) {
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
-                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
-                
+                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
+                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;                
                 if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
                 }
@@ -72,7 +71,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (Forensic Mode) for: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (Targeted Megaplay Extraction) for: ${episodeUrl}`);
     
     let browser;
     try {
@@ -96,31 +95,36 @@ async function getVideoSourceUrl(episodeUrl) {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
         });
 
-        await page.setUserAgent(headers['User-Agent']);        await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
-
+        await page.setUserAgent(headers['User-Agent']);
+        await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
         await client.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
 
         let videoUrl = null;
-        let allRequests = [];
+        let playerUrl = null;
 
-        // 🚀 LOG ALL NETWORK REQUESTS
+        // 🚀 MAIN PAGE CDP LISTENER
         client.on('Network.responseReceived', (event) => {
             const url = event.response.url;
             const type = event.type;
-            allRequests.push({ type, url });
             
-            // Strict video check
-            const isVideoFile = url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts');
-            const isNotAsset = !url.includes('.woff') && !url.includes('.css') && !url.includes('.js') && 
-                               !url.includes('.png') && !url.includes('.jpg') && !url.includes('.svg');
-
-            if (isVideoFile && isNotAsset) {
-                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking')) {
+            // 1. Catch direct video files
+            if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
+                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff') && !url.includes('.css') && !url.includes('.js')) {
                     if (!videoUrl) {
                         videoUrl = url;
-                        console.log(`[Debug] ✅ Intercepted STRICT video URL via CDP: ${videoUrl}`);
+                        console.log(`[Debug] ✅ Intercepted direct video URL: ${videoUrl}`);
+                    }
+                }
+            }
+            
+            // 2. Catch the video host document (e.g., megaplay.buzz)
+            if (type === 'Document' && !url.includes('anikai.watch') && !url.includes('cloudflare') && !url.includes('google')) {
+                if (url.includes('megaplay') || url.includes('stream') || url.includes('player') || url.includes('video') || url.includes('embed') || url.includes('buzz')) {
+                    if (!playerUrl) {
+                        playerUrl = url;
+                        console.log(`[Debug] ✅ Intercepted Video Host Document: ${playerUrl}`);
                     }
                 }
             }
@@ -129,122 +133,68 @@ async function getVideoSourceUrl(episodeUrl) {
         console.log(`[Debug] Navigating to episode page...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        console.log(`[Debug] Waiting 5 seconds for player to render...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Wait for JS to render the player
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
         // Try to click play button
         await page.evaluate(() => {
-            const selectors = ['.btn-play', '.play-button', 'a[href="#player"]', '.vscontrol', '.play-btn', 'button', '.player-overlay', '.play'];
-            for (const selector of selectors) {
-                const btn = document.querySelector(selector);
-                if (btn) { 
-                    btn.click(); 
-                    break; 
-                }
-            }
+            const btn = document.querySelector('.btn-play, .play-button, a[href="#player"], .vscontrol, .play-btn, button, .player-overlay, .play');
+            if (btn) btn.click();
         }).catch(() => {});
 
         await new Promise(resolve => setTimeout(resolve, 3000));
+
         if (videoUrl) {
-            console.log(`[Debug] ⏭️ Success: Real video URL captured by CDP!`);
-            return videoUrl;
+            console.log(`[Debug] ⏭️ Success: Direct video URL captured!`);            return videoUrl;
         }
 
-        // 🚀 FORENSIC DOM SCAN
-        console.log(`[Debug] Performing forensic DOM scan...`);
-        const domData = await page.evaluate(() => {
-            const data = { iframes: [], videos: [], suspiciousLinks: [], base64: [] };
+        // 🚀 IF WE FOUND THE PLAYER HOST, OPEN IT IN A NEW TAB
+        if (playerUrl) {
+            console.log(`[Debug] Opening Video Host in new tab: ${playerUrl}`);
+            const playerPage = await browser.newPage();
             
-            // 1. Find ALL iframes and their attributes
-            document.querySelectorAll('iframe').forEach(iframe => {
-                data.iframes.push({
-                    src: iframe.src,
-                    dataSrc: iframe.getAttribute('data-src'),
-                    class: iframe.className
-                });
+            await playerPage.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
             });
+            await playerPage.setUserAgent(headers['User-Agent']);
+            await playerPage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
             
-            // 2. Find ALL video tags
-            document.querySelectorAll('video, video source').forEach(vid => {
-                data.videos.push({
-                    src: vid.src,
-                    data: vid.getAttribute('data-src') || vid.getAttribute('src')
-                });
-            });
+            const playerClient = await playerPage.target().createCDPSession();
+            await playerClient.send('Network.enable');
+            await playerClient.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
 
-            // 3. Find suspicious links (video hosts)
-            document.querySelectorAll('a, source, embed, object, div[data-video], div[data-embed]').forEach(el => {
-                const href = el.href || el.src || el.getAttribute('data-src') || el.getAttribute('data-video') || el.getAttribute('data-embed');
-                if (href && (href.includes('http') || href.includes('//'))) {
-                    if (href.includes('mega') || href.includes('vid') || href.includes('stream') || 
-                        href.includes('cloud') || href.includes('player') || href.includes('mp4') || 
-                        href.includes('m3u8') || href.includes('embed')) {
-                        data.suspiciousLinks.push(href);
+            playerClient.on('Network.responseReceived', (event) => {
+                const url = event.response.url;
+                if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
+                    if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
+                        if (!videoUrl) {
+                            videoUrl = url;
+                            console.log(`[Debug] ✅ Intercepted video URL from player host: ${videoUrl}`);
+                        }
                     }
                 }
             });
 
-            // 4. Find base64 strings in select options or hidden inputs
-            document.querySelectorAll('select option, input[type="hidden"]').forEach(el => {
-                const val = el.value;
-                if (val && val.length > 50 && val.length < 2000) {
-                    try {
-                        const decoded = atob(val);
-                        if (decoded.includes('http') || decoded.includes('iframe')) {
-                            data.base64.push(decoded);
-                        }
-                    } catch (e) {}
-                }            });
+            await playerPage.goto(playerUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            
+            // Try clicking play on the player page
+            await playerPage.evaluate(() => {
+                const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button, .plyr__control, .video-js, .center-btn');
+                if (btn) btn.click();
+            }).catch(() => {});
 
-            return data;
-        }).catch(() => null);
-
-        if (domData) {
-            if (domData.iframes.length > 0) {
-                console.log(`[Debug] 🔍 Found ${domData.iframes.length} iframes:`, JSON.stringify(domData.iframes, null, 2));
-            }
-            if (domData.videos.length > 0) {
-                console.log(`[Debug] 🔍 Found ${domData.videos.length} video tags:`, JSON.stringify(domData.videos, null, 2));
-            }
-            if (domData.suspiciousLinks.length > 0) {
-                console.log(`[Debug] 🔍 Found ${domData.suspiciousLinks.length} suspicious links:`, domData.suspiciousLinks);
-            }
-            if (domData.base64.length > 0) {
-                console.log(`[Debug] 🔍 Found ${domData.base64.length} base64 strings:`, domData.base64);
+            // Wait for the stream to start
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            if (videoUrl) {
+                console.log(`[Debug] ⏭️ Success: Video URL captured from player host!`);
+                return videoUrl;
             }
         }
 
-        // 🚀 PRINT RELEVANT NETWORK REQUESTS (API calls that might return the video URL)
-        const relevantRequests = allRequests.filter(r => 
-            r.type === 'XHR' || r.type === 'Fetch' || r.type === 'Document' || r.type === 'Media' || r.type === 'Script'
-        ).slice(0, 40); // Increased to 40 to catch more
-        
-        console.log(`[Debug] 🌐 Top Relevant Network Requests:`);
-        relevantRequests.forEach(r => {
-            console.log(`   [${r.type}] ${r.url.substring(0, 150)}`);
-        });
+        throw new Error('Could not intercept video URL from main page or player host.');
 
-        // Save HTML for manual inspection if needed
-        const htmlContent = await page.content();
-        fs.writeFileSync('/tmp/anikai_page.html', htmlContent);
-
-        if (!videoUrl && domData && domData.iframes.length > 0) {
-            // Fallback: If we found an iframe but CDP didn't catch the video, return the iframe URL
-            // The downloader might be able to handle it, or it gives us a lead.
-            videoUrl = domData.iframes[0].src || domData.iframes[0].dataSrc;
-            console.log(`[Debug] ✅ Fallback: Using first iframe found: ${videoUrl}`);
-            return videoUrl;
-        }
-
-        if (!videoUrl) {
-            console.error(`[Debug] ❌ FAILED: No video URL found.`);
-            console.error(`[Debug] Total network requests captured: ${allRequests.length}`);
-            throw new Error('Could not intercept video URL. Check the forensic logs above.');
-        }
-
-        return videoUrl;
-    } catch (error) {
-        console.error('Video Source Error:', error.message);
+    } catch (error) {        console.error('Video Source Error:', error.message);
         throw new Error(`Failed to extract video URL: ${error.message}`);
     } finally {
         if (browser) {
