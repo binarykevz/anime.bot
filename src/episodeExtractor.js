@@ -81,9 +81,9 @@ async function getVideoSourceUrl(episodeUrl) {
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Prevents /dev/shm crashes
+                '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--no-zygote', // Prevents zygote memory forks
+                '--no-zygote',
                 '--disable-extensions',
                 '--disable-background-networking',
                 '--disable-default-apps',
@@ -100,7 +100,6 @@ async function getVideoSourceUrl(episodeUrl) {
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
 
-        // 🚀 CDP SETUP: Bulletproof ad blocking without Node.js race conditions
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
         await client.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
@@ -122,9 +121,22 @@ async function getVideoSourceUrl(episodeUrl) {
         console.log(`[Debug] Navigating to episode page (fast + CDP adblocked)...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        const playBtn = await page.$('.btn-play, .play-button, a[href="#player"], .vscontrol');
-        if (playBtn) {
-            await playBtn.click().catch(() => {}); 
+        // 🚀 FIX: Click the play button INSIDE the browser context to avoid Node.js race conditions
+        try {
+            await page.evaluate(() => {
+                const selectors = ['.btn-play', '.play-button', 'a[href="#player"]', '.vscontrol', '.play-btn'];
+                for (const selector of selectors) {
+                    const btn = document.querySelector(selector);
+                    if (btn) {
+                        btn.click();
+                        break; // Click the first one found and stop
+                    }
+                }
+            });
+            // Give it a tiny moment to register the click and load the player
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (e) {
+            // Silently ignore if no button exists or click fails
         }
 
         const iframeUrl = await page.evaluate(() => {
@@ -133,8 +145,7 @@ async function getVideoSourceUrl(episodeUrl) {
                 if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook') && !iframe.src.includes('google')) {
                     return iframe.src;
                 }
-            }
-            
+            }            
             const options = document.querySelectorAll('select option');
             for (let opt of options) {
                 const val = opt.value;
@@ -145,7 +156,8 @@ async function getVideoSourceUrl(episodeUrl) {
                         if (match && match[1]) return match[1];
                     } catch (e) {}
                 }
-            }            return null;
+            }
+            return null;
         });
 
         // 🚀 MEMORY OPTIMIZATION: ONLY open the iframe if we haven't found the video URL yet!
@@ -182,8 +194,7 @@ async function getVideoSourceUrl(episodeUrl) {
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         if (!videoUrl) {
-            throw new Error('Could not intercept .m3u8 or .mp4 URL. The site might be blocking Puppeteer or using a new player.');
-        }
+            throw new Error('Could not intercept .m3u8 or .mp4 URL. The site might be blocking Puppeteer or using a new player.');        }
 
         return videoUrl;
 
@@ -194,6 +205,7 @@ async function getVideoSourceUrl(episodeUrl) {
         if (browser) {
             await browser.close();
         }
-    }}
+    }
+}
 
 module.exports = { getEpisodes, getVideoSourceUrl };
