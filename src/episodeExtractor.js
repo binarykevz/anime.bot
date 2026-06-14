@@ -11,7 +11,6 @@ const headers = {
     'Referer': `${BASE_URL}/`
 };
 
-// 🛡️ CDP Blocklist: Wildcards are supported natively by Chrome
 const BLOCKED_URLS = [
     '*doubleclick.net*', '*googlesyndication.com*', '*adservice.google.com*',
     '*popads.net*', '*popcash.net*', '*adnxs.com*', '*advertising.com*',
@@ -47,8 +46,8 @@ async function getEpisodes(animeUrl) {
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
-                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
-                
+                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
+                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;                
                 if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
                 }
@@ -72,43 +71,42 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (CDP AdBlocker) to extract video URL from: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (Low-Memory Mode) to extract video URL from: ${episodeUrl}`);
     
     let browser;
     try {
         browser = await puppeteer.launch({
             headless: true, 
+            ignoreHTTPSErrors: true,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', 
+                '--disable-dev-shm-usage', // Prevents /dev/shm crashes
                 '--disable-gpu',
-                '--single-process',        
-                '--no-zygote',             
+                '--no-zygote', // Prevents zygote memory forks
                 '--disable-extensions',
                 '--disable-background-networking',
                 '--disable-default-apps',
                 '--no-first-run',
                 '--disable-sync',
                 '--disable-translate',
-                '--metrics-recording-only'
+                '--metrics-recording-only',
+                '--disable-features=TranslateUI',
+                '--disable-ipc-flooding-protection'
             ],
             timeout: 30000 
         });
-
-        const page = await browser.newPage();        await page.setUserAgent(headers['User-Agent']);
+        const page = await browser.newPage();
+        await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
 
-        // 🚀 CDP SETUP: The bulletproof way to block ads without race conditions
+        // 🚀 CDP SETUP: Bulletproof ad blocking without Node.js race conditions
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
-        
-        // Block ads at the browser engine level (No Node.js interception lag!)
         await client.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
 
         let videoUrl = null;
 
-        // Listen for network responses to catch the .m3u8 or .mp4
         client.on('Network.responseReceived', (event) => {
             const url = event.response.url;
             if (url.includes('.m3u8') || url.includes('.mp4')) {
@@ -124,13 +122,11 @@ async function getVideoSourceUrl(episodeUrl) {
         console.log(`[Debug] Navigating to episode page (fast + CDP adblocked)...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Quick click on play buttons if they exist
         const playBtn = await page.$('.btn-play, .play-button, a[href="#player"], .vscontrol');
         if (playBtn) {
             await playBtn.click().catch(() => {}); 
         }
 
-        // Find the iframe or video source URL
         const iframeUrl = await page.evaluate(() => {
             const iframes = document.querySelectorAll('iframe');
             for (let iframe of iframes) {
@@ -145,21 +141,21 @@ async function getVideoSourceUrl(episodeUrl) {
                 if (val && val.length > 50) {
                     try {
                         const decoded = atob(val); 
-                        const match = decoded.match(/src="([^"]+)"/);                        if (match && match[1]) return match[1];
+                        const match = decoded.match(/src="([^"]+)"/);
+                        if (match && match[1]) return match[1];
                     } catch (e) {}
                 }
-            }
-            return null;
+            }            return null;
         });
 
-        if (iframeUrl) {
-            console.log(`[Debug] ✅ Found iframe: ${iframeUrl}`);
+        // 🚀 MEMORY OPTIMIZATION: ONLY open the iframe if we haven't found the video URL yet!
+        if (iframeUrl && !videoUrl) {
+            console.log(`[Debug] ✅ Found iframe, opening to intercept: ${iframeUrl}`);
 
             const iframePage = await browser.newPage();
             await iframePage.setUserAgent(headers['User-Agent']);
             await iframePage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
 
-            // 🚀 Apply SAME CDP AdBlocker to the iframe page
             const iframeClient = await iframePage.target().createCDPSession();
             await iframeClient.send('Network.enable');
             await iframeClient.send('Network.setBlockedURLs', { urls: BLOCKED_URLS });
@@ -178,9 +174,10 @@ async function getVideoSourceUrl(episodeUrl) {
 
             console.log(`[Debug] Navigating to iframe (fast + CDP adblocked)...`);
             await iframePage.goto(iframeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        } else if (videoUrl) {
+            console.log(`[Debug] ⏭️ Skipping iframe load: Video URL already found on main page!`);
         }
 
-        // Short wait to ensure the player JS has time to fire the .m3u8 request
         console.log(`[Debug] Waiting briefly for player initialization...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -194,9 +191,9 @@ async function getVideoSourceUrl(episodeUrl) {
         console.error('Video Source Error:', error.message);
         throw new Error(`Failed to extract video URL: ${error.message}`);
     } finally {
-        if (browser) {            await browser.close();
+        if (browser) {
+            await browser.close();
         }
-    }
-}
+    }}
 
 module.exports = { getEpisodes, getVideoSourceUrl };
