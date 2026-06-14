@@ -1,9 +1,8 @@
+
 const fs = require('fs');
 const { getSearchResults } = require('./scraper');
 const { getEpisodes, getVideoSourceUrl } = require('./episodeExtractor');
 const { downloadAndConvertToMp4, cleanupTempFile } = require('./downloader');
-
-// Removed: const { initUpload, uploadFileToUrl } = require('./storage');
 
 function escapeHtml(text) {
     if (!text) return '';
@@ -47,8 +46,8 @@ async function handleSearch(bot, msg, match) {
         const results = await getSearchResults(query);
         if (results.length === 0) return bot.sendMessage(chatId, `❌ No results found for "${escapeHtml(query)}".`);
 
-        let message = `🔍 <b>Results for "${escapeHtml(query)}"</b>\n\n`;        results.slice(0, 10).forEach((anime, i) => {
-            message += `<b>${i + 1}.</b> <a href="${anime.url}">${escapeHtml(anime.title)}</a>\n`;
+        let message = `🔍 <b>Results for "${escapeHtml(query)}"</b>\n\n`;
+        results.slice(0, 10).forEach((anime, i) => {            message += `<b>${i + 1}.</b> <a href="${anime.url}">${escapeHtml(anime.title)}</a>\n`;
         });
         message += `\n<i>Use /episodes &lt;url&gt; or /auto &lt;url&gt;.</i>`;
         await bot.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
@@ -57,9 +56,6 @@ async function handleSearch(bot, msg, match) {
     }
 }
 
-// ==========================================
-// UPDATED: Handle single episode upload (Direct to Telegram)
-// ==========================================
 async function handleUpload(bot, msg, match) {
     const chatId = msg.chat.id;
     const episodeUrl = match[1]?.trim();
@@ -89,18 +85,18 @@ async function handleUpload(bot, msg, match) {
         
         // 🚀 SEND DIRECTLY TO TELEGRAM
         await bot.sendVideo(chatId, tempFilePath, {
-            caption: `📺 <b>${escapeHtml(animeName)}</b>\n🔹 Episode ${epNum}`,
+            caption: '📺 <b>' + escapeHtml(animeName) + '</b>\n🔹 Episode ' + epNum,
             parse_mode: 'HTML',
-            supportsStreaming: true // Allows users to stream without downloading
+            supportsStreaming: true
         });
 
-        await bot.sendMessage(chatId, `✅ <b>Success!</b> Video sent directly to chat.`, { parse_mode: 'HTML' });
+        await bot.sendMessage(chatId, '✅ <b>Success!</b> Video sent directly to chat.', { parse_mode: 'HTML' });
 
-    } catch (error) {        console.error('Upload Handler Error:', error);
+    } catch (error) {
+        console.error('Upload Handler Error:', error);
         if (error.message.includes('413')) {
-            await bot.sendMessage(chatId, `❌ <b>Error:</b> The video file is too large for the standard Telegram Bot API (Limit is 50MB).`, { parse_mode: 'HTML' });
-        } else {
-            await bot.sendMessage(chatId, `❌ <b>Error:</b> ${escapeHtml(error.message)}`, { parse_mode: 'HTML' });
+            await bot.sendMessage(chatId, '❌ <b>Error:</b> The video file is too large for the standard Telegram Bot API (Limit is 50MB).', { parse_mode: 'HTML' });
+        } else {            await bot.sendMessage(chatId, '❌ <b>Error:</b> ' + escapeHtml(error.message), { parse_mode: 'HTML' });
         }
     } finally {
         if (tempFilePath) {
@@ -109,9 +105,6 @@ async function handleUpload(bot, msg, match) {
     }
 }
 
-// ==========================================
-// UPDATED: Handle Auto-Batch (Direct to Telegram)
-// ==========================================
 async function handleAutoBatch(bot, msg, match) {
     const chatId = msg.chat.id;
     const animeUrl = match[1]?.trim();
@@ -122,7 +115,7 @@ async function handleAutoBatch(bot, msg, match) {
         return bot.sendMessage(chatId, "⚠️ Usage: <code>/auto &lt;anime_url&gt; [start_ep] [end_ep]</code>", { parse_mode: 'HTML' });
     }
 
-    await bot.sendMessage(chatId, `🤖 <b>Auto-Batch Started!</b>\nDownloading and sending episodes ${startEp} to ${endEp} directly to chat.`, { parse_mode: 'HTML' });
+    await bot.sendMessage(chatId, '🤖 <b>Auto-Batch Started!</b>\nDownloading and sending episodes ' + startEp + ' to ' + endEp + ' directly to chat.', { parse_mode: 'HTML' });
 
     let tempFilePath = null;
 
@@ -135,7 +128,7 @@ async function handleAutoBatch(bot, msg, match) {
 
         for (const ep of targetEpisodes) {
             try {
-                await bot.sendMessage(chatId, `⏳ <b>Processing Episode ${ep.number}...</b>`, { parse_mode: 'HTML' });
+                await bot.sendMessage(chatId, '⏳ <b>Processing Episode ' + ep.number + '...</b>', { parse_mode: 'HTML' });
                 
                 const videoUrl = await getVideoSourceUrl(ep.url);
                 
@@ -143,19 +136,19 @@ async function handleAutoBatch(bot, msg, match) {
                 tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, ep.number);
                 const fileSizeMB = (fs.statSync(tempFilePath).size / 1024 / 1024).toFixed(2);
                 
-                await bot.sendMessage(chatId, `⬆️ Sending Ep ${ep.number} (${fileSizeMB} MB)...`);
+                await bot.sendMessage(chatId, '⬆️ Sending Ep ' + ep.number + ' (' + fileSizeMB + ' MB)...');
                 
-                // 🚀 SEND DIRECTLY TO TELEGRAM                await bot.sendVideo(chatId, tempFilePath, {
-                    caption: `📺 <b>${escapeHtml(animeName)}</b>\n🔹 Episode ${ep.number}`,
+                // 🚀 SEND DIRECTLY TO TELEGRAM
+                await bot.sendVideo(chatId, tempFilePath, {
+                    caption: '📺 <b>' + escapeHtml(animeName) + '</b>\n🔹 Episode ' + ep.number,
                     parse_mode: 'HTML',
                     supportsStreaming: true
                 });
 
-                await bot.sendMessage(chatId, `✅ Episode ${ep.number} sent!`);
-                
+                await bot.sendMessage(chatId, '✅ Episode ' + ep.number + ' sent!');                
             } catch (epError) {
-                console.error(`Error on Ep ${ep.number}:`, epError);
-                await bot.sendMessage(chatId, `❌ Failed Ep ${ep.number}: ${escapeHtml(epError.message)}`, { parse_mode: 'HTML' });
+                console.error('Error on Ep ' + ep.number + ':', epError);
+                await bot.sendMessage(chatId, '❌ Failed Ep ' + ep.number + ': ' + escapeHtml(epError.message), { parse_mode: 'HTML' });
             } finally {
                 if (tempFilePath) {
                     cleanupTempFile(tempFilePath);
@@ -164,11 +157,11 @@ async function handleAutoBatch(bot, msg, match) {
             }
         }
 
-        await bot.sendMessage(chatId, `🎉 <b>Batch Complete!</b> All requested episodes have been sent to the chat.`, { parse_mode: 'HTML' });
+        await bot.sendMessage(chatId, '🎉 <b>Batch Complete!</b> All requested episodes have been sent to the chat.', { parse_mode: 'HTML' });
 
     } catch (error) {
         console.error('Auto Batch Error:', error);
-        await bot.sendMessage(chatId, `❌ <b>Batch Failed:</b> ${escapeHtml(error.message)}`, { parse_mode: 'HTML' });
+        await bot.sendMessage(chatId, '❌ <b>Batch Failed:</b> ' + escapeHtml(error.message), { parse_mode: 'HTML' });
     }
 }
 
