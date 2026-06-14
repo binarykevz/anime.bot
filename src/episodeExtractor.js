@@ -64,7 +64,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (Trojan Horse Strategy) for: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (API Direct Strike) for: ${episodeUrl}`);
     
     let browser;
     try {
@@ -94,22 +94,13 @@ async function getVideoSourceUrl(episodeUrl) {
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
 
-        let videoUrl = null;
         let playerUrl = null;
-        // 🚀 MAIN PAGE PASSIVE LISTENER
-        client.on('Network.responseReceived', (event) => {
+
+        // 🚀 MAIN PAGE PASSIVE LISTENER        client.on('Network.responseReceived', (event) => {
             const url = event.response.url;
             const type = event.type;
             
-            if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
-                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
-                    if (!videoUrl) {
-                        videoUrl = url;
-                        console.log(`[Debug] ✅ Intercepted direct video URL: ${videoUrl}`);
-                    }
-                }
-            }
-            
+            // Catch the video host document (e.g., megaplay.buzz)
             if (type === 'Document' && !url.includes('anikai.watch') && !url.includes('cloudflare') && !url.includes('google')) {
                 if (url.includes('megaplay') || url.includes('stream') || url.includes('player') || url.includes('video') || url.includes('embed') || url.includes('buzz')) {
                     if (!playerUrl) {
@@ -132,118 +123,60 @@ async function getVideoSourceUrl(episodeUrl) {
 
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        if (videoUrl) {
-            console.log(`[Debug] ⏭️ Success: Direct video URL captured!`);
-            return videoUrl;
+        if (!playerUrl) {
+            throw new Error('Could not intercept video host URL from main page.');
         }
 
-        // 🚀 TROJAN HORSE STRATEGY: Use Axios to parse the blocked /stream/ URL
-        if (playerUrl) {
-            console.log(`[Debug] Fetching player HTML via Axios (Bypasses Chrome block): ${playerUrl}`);
-            try {
-                const playerRes = await axios.get(playerUrl, {
-                    headers: { ...headers, Referer: episodeUrl },
-                    timeout: 10000
-                });
-                                const playerHtml = playerRes.data;
-                const $p = cheerio.load(playerHtml);
-                let embedUrl = null;
-
-                // 1. Find direct video links in the HTML
-                const videoMatch = playerHtml.match(/(https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)[^\s"'<>\\]*)/);
-                if (videoMatch) {
-                    videoUrl = videoMatch[1].replace(/\\/g, '');
-                    console.log(`[Debug] ✅ Found direct video URL in player HTML: ${videoUrl}`);
-                    return videoUrl;
-                }
-
-                // 2. Find iframes
-                $p('iframe').each((i, el) => {
-                    const src = $p(el).attr('src') || $p(el).attr('data-src');
-                    if (src && src.includes('http') && !src.includes('youtube') && !src.includes('google') && !src.includes('anikai')) {
-                        embedUrl = src;
-                    }
-                });
-
-                // 3. Find base64 encoded iframes in scripts
-                if (!embedUrl) {
-                    $p('script').each((i, el) => {
-                        const text = $p(el).html();
-                        if (text && text.includes('atob')) {
-                            const matches = text.match(/atob\(['"]([A-Za-z0-9+/=]+)['"]\)/g);
-                            if (matches) {
-                                for (const match of matches) {
-                                    const b64 = match.match(/atob\(['"]([A-Za-z0-9+/=]+)['"]\)/)[1];
-                                    try {
-                                        const decoded = Buffer.from(b64, 'base64').toString('utf-8');
-                                        const iframeMatch = decoded.match(/src="([^"]+)"/);
-                                        if (iframeMatch && iframeMatch[1].includes('http')) {
-                                            embedUrl = iframeMatch[1];
-                                            break;
-                                        }
-                                    } catch (e) {}
-                                }
-                            }
-                        }
-                    });
-                }
-
-                if (embedUrl) {
-                    console.log(`[Debug] ✅ Found real embed URL: ${embedUrl}`);
-                    
-                    // 🚀 NOW load the EMBED URL in Puppeteer (This avoids the ERR_BLOCKED_BY_CLIENT bug!)
-                    const playerPage = await browser.newPage();
-                    
-                    await playerPage.evaluateOnNewDocument(() => {                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                    });
-                    await playerPage.setUserAgent(headers['User-Agent']);
-                    await playerPage.setExtraHTTPHeaders({ 'Referer': playerUrl });
-                    
-                    const playerClient = await playerPage.target().createCDPSession();
-                    await playerClient.send('Network.enable');
-
-                    playerClient.on('Network.responseReceived', (event) => {
-                        const url = event.response.url;
-                        if (url.includes('.m3u8') || url.includes('.mp4') || url.includes('.ts')) {
-                            if (!url.includes('ads') && !url.includes('preroll') && !url.includes('tracking') && !url.includes('.woff')) {
-                                if (!videoUrl) {
-                                    videoUrl = url;
-                                    console.log(`[Debug] ✅ Intercepted video URL from embed: ${videoUrl}`);
-                                }
-                            }
-                        }
-                    });
-
-                    console.log(`[Debug] Loading embed URL in Puppeteer...`);
-                    await playerPage.goto(embedUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-                    
-                    await playerPage.evaluate(() => {
-                        const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button, .plyr__control, .video-js, .center-btn');
-                        if (btn) btn.click();
-                    }).catch(() => {});
-
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                    
-                    if (videoUrl) {
-                        console.log(`[Debug] ⏭️ Success: Video URL captured from embed!`);
-                        return videoUrl;
-                    }
-                } else {
-                    console.log(`[Debug] ⚠️ Could not find embed URL in player HTML.`);
-                }
-
-            } catch (axiosErr) {
-                console.log(`[Debug] ⚠️ Axios failed to fetch player URL: ${axiosErr.message}`);
+        // 🚀 API DIRECT STRIKE: Extract ID and call getSources
+        console.log(`[Debug] Extracting ID from player URL: ${playerUrl}`);
+        
+        let videoId = null;
+        
+        // Try to match standard MegaPlay URL structures
+        // e.g., /stream/mal/62568/10/sub or /stream/s-2/62568 or /embed-4/62568
+        const streamMatch = playerUrl.match(/\/(?:stream|embed)[^/]*\/(\d+)/);
+        if (streamMatch && streamMatch[1]) {
+            videoId = streamMatch[1];
+        } else {
+            // Fallback: find the first number with at least 4 digits
+            const fallbackMatch = playerUrl.match(/\/(\d{4,})(?:\/|$)/);
+            if (fallbackMatch && fallbackMatch[1]) {
+                videoId = fallbackMatch[1];
             }
         }
 
-        throw new Error('Could not intercept video URL from main page or player host.');
+        if (!videoId) {            throw new Error(`Could not extract ID from player URL: ${playerUrl}`);
+        }
+        
+        console.log(`[Debug] ✅ Extracted Video ID: ${videoId}`);
+
+        const apiUrl = `https://megaplay.buzz/stream/getSources?id=${videoId}`;
+        console.log(`[Debug] Calling MegaPlay API: ${apiUrl}`);
+
+        const apiRes = await axios.get(apiUrl, {
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Referer': playerUrl,
+                'User-Agent': headers['User-Agent']
+            },
+            timeout: 10000
+        });
+
+        if (apiRes.data && apiRes.data.sources && apiRes.data.sources.file) {
+            const videoUrl = apiRes.data.sources.file;
+            console.log(`[Debug] ✅ SUCCESS! Extracted video URL via API: ${videoUrl}`);
+            return videoUrl;
+        } else {
+            console.error(`[Debug] ❌ API response did not contain video source:`, apiRes.data);
+            throw new Error('MegaPlay API did not return a video source.');
+        }
 
     } catch (error) {
         console.error('Video Source Error:', error.message);
         throw new Error(`Failed to extract video URL: ${error.message}`);
     } finally {
-        if (browser) {            await browser.close();
+        if (browser) {
+            await browser.close();
         }
     }
 }
