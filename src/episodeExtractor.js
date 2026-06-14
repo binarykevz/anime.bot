@@ -11,7 +11,6 @@ const headers = {
     'Referer': `${BASE_URL}/`
 };
 
-// 🛡️ Lightweight AdBlocker: Block known ad, tracker, and analytics domains
 const BLOCKED_DOMAINS = new Set([
     'doubleclick.net', 'googlesyndication.com', 'adservice.google.com',
     'popads.net', 'popcash.net', 'adnxs.com', 'advertising.com',
@@ -39,7 +38,7 @@ async function getEpisodes(animeUrl) {
         } catch (err) {
             console.log(`[Debug] Series URL failed, trying fallback: ${BASE_URL}/${slug}/`);
             seriesUrl = `${BASE_URL}/${slug}/`;
-            htmlRes = await axios.get(seriesUrl, { headers, timeout:10000 });
+            htmlRes = await axios.get(seriesUrl, { headers, timeout: 10000 });
         }
         
         const $ = cheerio.load(htmlRes.data);
@@ -47,8 +46,8 @@ async function getEpisodes(animeUrl) {
         
         $('a').each((i, el) => {
             const href = $(el).attr('href');
-            if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
-                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
+            if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
+                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);                const epNum = epNumMatch ? epNumMatch[1] : `Ep ${i + 1}`;
                 
                 if (!episodes.find(ep => ep.url === href)) {
                     episodes.push({ number: epNum, url: href, id: href });
@@ -96,30 +95,25 @@ async function getVideoSourceUrl(episodeUrl) {
             ],
             timeout: 30000 
         });
-        const page = await browser.newPage();
-        
-        // 🛡️ ADVANCED ADBLOCKER & RESOURCE BLOCKER (With Race Condition Fix)
+
+        const page = await browser.newPage();        
         await page.setRequestInterception(true);
         page.on('request', (request) => {
-            // CRITICAL FIX: Skip if the browser has already resolved this request (prevents "main frame too early" error)
             if (request.isInterceptResolutionHandled()) return;
 
             const url = request.url().toLowerCase();
             const resourceType = request.resourceType();
             
-            // 1. Block heavy, non-essential resources immediately
             if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
                 return request.abort();
             }
             
-            // 2. Block known ad networks, trackers, and analytics
             for (const blocked of BLOCKED_DOMAINS) {
                 if (url.includes(blocked)) {
                     return request.abort();
                 }
             }
             
-            // Allow everything else (HTML, JS, XHR, Fetch, WebSocket)
             return request.continue();
         });
 
@@ -128,11 +122,9 @@ async function getVideoSourceUrl(episodeUrl) {
 
         let videoUrl = null;
 
-        // Intercept network requests immediately to catch the .m3u8/.mp4
         page.on('response', async (response) => {
             const url = response.url();
             if (url.includes('.m3u8') || url.includes('.mp4')) {
-                // Filter out tiny ad videos or tracking pixels
                 if (url.length > 30 && !url.includes('ads') && !url.includes('tracking')) {
                     if (!videoUrl) {
                         videoUrl = url;
@@ -145,18 +137,15 @@ async function getVideoSourceUrl(episodeUrl) {
         console.log(`[Debug] Navigating to episode page (fast + adblocked)...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Quick click on play buttons if they exist        try {
-            const playBtn = await page.$('.btn-play, .play-button, a[href="#player"], .vscontrol');
-            if (playBtn) {
-                await playBtn.click().catch(() => {}); 
-            }
-        } catch (e) {}
+        // Simplified play button click (no nested try-catch to prevent syntax errors)
+        const playBtn = await page.$('.btn-play, .play-button, a[href="#player"], .vscontrol');
+        if (playBtn) {
+            await playBtn.click().catch(() => {}); 
+        }
 
-        // Find the iframe or video source URL
         const iframeUrl = await page.evaluate(() => {
             const iframes = document.querySelectorAll('iframe');
-            for (let iframe of iframes) {
-                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook') && !iframe.src.includes('google')) {
+            for (let iframe of iframes) {                if (iframe.src && !iframe.src.includes('youtube') && !iframe.src.includes('disqus') && !iframe.src.includes('facebook') && !iframe.src.includes('google')) {
                     return iframe.src;
                 }
             }
@@ -180,7 +169,6 @@ async function getVideoSourceUrl(episodeUrl) {
 
             const iframePage = await browser.newPage();
             
-            // 🛡️ Apply the SAME AdBlocker (with race condition fix) to the iframe page
             await iframePage.setRequestInterception(true);
             iframePage.on('request', (request) => {
                 if (request.isInterceptResolutionHandled()) return;
@@ -194,7 +182,8 @@ async function getVideoSourceUrl(episodeUrl) {
                 for (const blocked of BLOCKED_DOMAINS) {
                     if (url.includes(blocked)) {
                         return request.abort();
-                    }                }
+                    }
+                }
                 return request.continue();
             });
 
@@ -205,8 +194,7 @@ async function getVideoSourceUrl(episodeUrl) {
                 const url = response.url();
                 if (url.includes('.m3u8') || url.includes('.mp4')) {
                     if (url.length > 30 && !url.includes('ads') && !url.includes('tracking')) {
-                        if (!videoUrl) {
-                            videoUrl = url;
+                        if (!videoUrl) {                            videoUrl = url;
                             console.log(`[Debug] ✅ Intercepted video URL from iframe: ${videoUrl}`);
                         }
                     }
@@ -217,7 +205,6 @@ async function getVideoSourceUrl(episodeUrl) {
             await iframePage.goto(iframeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
         }
 
-        // Short wait just to ensure the player JS has time to fire the .m3u8 request
         console.log(`[Debug] Waiting briefly for player initialization...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
 
