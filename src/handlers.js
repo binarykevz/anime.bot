@@ -2,33 +2,22 @@ const fs = require('fs');
 const { getSearchResults } = require('./scraper');
 const { getEpisodes, getVideoSourceUrl } = require('./episodeExtractor');
 const { downloadAndConvertToMp4, cleanupTempFile } = require('./downloader');
-const { initUpload, uploadFileToUrl } = require('./storage');
+
+// Removed: const { initUpload, uploadFileToUrl } = require('./storage');
 
 function escapeHtml(text) {
     if (!text) return '';
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/**
- * Helper to cleanly extract Anime Name and Episode Number from WordPress-style URLs
- * Example: "dr-stone-science-future-part-3-episode-10-in-english-subbed" 
- * Returns: { animeName: "Dr Stone Science Future Part 3", epNum: "10" }
- */
 function parseAnimeInfoFromUrl(url) {
     const urlParts = url.split('/').filter(Boolean);
     const slug = urlParts[urlParts.length - 1];
-    
-    // Clean up slug: remove "-in-english-subbed" or "-in-english-dubbed"
     let cleanSlug = slug.replace(/-in-english-(subbed|dubbed)/i, '');
-    
-    // Extract episode number
     const epNumMatch = cleanSlug.match(/(?:-episode-|-ep-)(\d+)/i);
     const epNum = epNumMatch ? epNumMatch[1] : '1';
-    
-    // Extract anime name by removing the episode part
     let animeName = cleanSlug.replace(/(?:-episode-|-ep-)\d+.*/i, '');
     animeName = animeName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    
     return { animeName, epNum };
 }
 
@@ -40,13 +29,14 @@ async function handleStart(bot, msg) {
 <b>Commands:</b>
 /search &lt;name&gt; - Search for an anime
 /episodes &lt;anime_url&gt; - List episodes of an anime
-/upload &lt;episode_url&gt; - Process a single episode
-/auto &lt;anime_url&gt; [start] [end] - 🤖 <b>Auto-Batch</b> process multiple episodes!
+/upload &lt;episode_url&gt; - Download & Send a single episode directly to chat
+/auto &lt;anime_url&gt; [start] [end] - 🤖 <b>Auto-Batch</b> download & send multiple episodes!
 
 <i>Example:</i> <code>/auto https://anikai.watch/series/one-piece 1 3</code>
     `;
     await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'HTML' });
 }
+
 async function handleSearch(bot, msg, match) {
     const chatId = msg.chat.id;
     const query = match[1]?.trim();
@@ -57,8 +47,7 @@ async function handleSearch(bot, msg, match) {
         const results = await getSearchResults(query);
         if (results.length === 0) return bot.sendMessage(chatId, `❌ No results found for "${escapeHtml(query)}".`);
 
-        let message = `🔍 <b>Results for "${escapeHtml(query)}"</b>\n\n`;
-        results.slice(0, 10).forEach((anime, i) => {
+        let message = `🔍 <b>Results for "${escapeHtml(query)}"</b>\n\n`;        results.slice(0, 10).forEach((anime, i) => {
             message += `<b>${i + 1}.</b> <a href="${anime.url}">${escapeHtml(anime.title)}</a>\n`;
         });
         message += `\n<i>Use /episodes &lt;url&gt; or /auto &lt;url&gt;.</i>`;
@@ -69,62 +58,50 @@ async function handleSearch(bot, msg, match) {
 }
 
 // ==========================================
-// UPDATED: Handle single episode upload
+// UPDATED: Handle single episode upload (Direct to Telegram)
 // ==========================================
 async function handleUpload(bot, msg, match) {
     const chatId = msg.chat.id;
     const episodeUrl = match[1]?.trim();
     
     if (!episodeUrl || !episodeUrl.includes('http')) {
-        return bot.sendMessage(chatId, "⚠️ Usage: <code>/upload &lt;episode_url&gt;</code>\nExample: <code>/upload https://anikai.watch/dr-stone-episode-1/</code>", { parse_mode: 'HTML' });
+        return bot.sendMessage(chatId, "⚠️ Usage: <code>/upload &lt;episode_url&gt;</code>", { parse_mode: 'HTML' });
     }
 
-    await bot.sendMessage(chatId, "⏳ Starting process... This may take a few minutes.");
-    await bot.sendChatAction(chatId, 'upload_video');
-
+    await bot.sendMessage(chatId, "⏳ Starting process... Extracting and downloading video.");
+    
     let tempFilePath = null;
 
     try {
-        // 1. Parse Name and Episode from the new URL structure
         const { animeName, epNum } = parseAnimeInfoFromUrl(episodeUrl);
 
-        // 2. Get Video Source URL (Puppeteer handles the full URL directly now)
-        await bot.sendMessage(chatId, "🔍 Extracting video source (this may take a minute)...");
+        await bot.sendMessage(chatId, "🔍 Extracting video source...");
         const videoUrl = await getVideoSourceUrl(episodeUrl);
 
-        // 3. Download & Convert to MP4
         await bot.sendChatAction(chatId, 'upload_video');
         await bot.sendMessage(chatId, "⬇️ Downloading and converting to MP4...");
         tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, epNum);
-                const stats = fs.statSync(tempFilePath);
-        const fileSize = stats.size;
         
-        const filename = `${animeName}, Episode ${epNum}.mp4`;
-
-        // 4. Initialize Upload
-        await bot.sendMessage(chatId, `📤 Initializing upload for "${filename}" (${(fileSize / 1024 / 1024).toFixed(2)} MB)...`);
-        const initData = await initUpload(filename, fileSize);
+        const stats = fs.statSync(tempFilePath);
+        const fileSizeMB = (stats.size / 1024 / 1024).toFixed(2);
         
-        // 🚀 DEBUG: Print the exact response from your Storage API so we can see what keys it uses
-        console.log(`[Debug] Storage API /init response:`, JSON.stringify(initData, null, 2));
+        await bot.sendMessage(chatId, `⬆️ Sending ${fileSizeMB} MB directly to Telegram...`);
         
-        // Try multiple possible keys for the upload URL
-        const uploadUrl = initData.upload_url || initData.url || initData.presigned_url || initData.uploadUrl || (initData.data && (initData.data.upload_url || initData.data.url));
-        
-        if (!uploadUrl) throw new Error('Storage API did not return an upload URL. Check the console logs for the actual API response.');
+        // 🚀 SEND DIRECTLY TO TELEGRAM
+        await bot.sendVideo(chatId, tempFilePath, {
+            caption: `📺 <b>${escapeHtml(animeName)}</b>\n🔹 Episode ${epNum}`,
+            parse_mode: 'HTML',
+            supportsStreaming: true // Allows users to stream without downloading
+        });
 
-        // 5. Stream to Storage API
-        await bot.sendMessage(chatId, "☁️ Uploading to storage server...");
-        await uploadFileToUrl(uploadUrl, tempFilePath);
+        await bot.sendMessage(chatId, `✅ <b>Success!</b> Video sent directly to chat.`, { parse_mode: 'HTML' });
 
-        // 6. Extract final link
-        const finalLink = initData.file_url || initData.link || initData.url || initData.download_url || (initData.data && (initData.data.file_url || initData.data.link || initData.data.url)) || `https://storage.to/f/${initData.file_id || initData.id}`;
-
-        await bot.sendMessage(chatId, `✅ <b>Success!</b>\nFile "<code>${escapeHtml(filename)}</code>" has been uploaded.\n🔗 <a href="${finalLink}">Download/Watch Link</a>`, { parse_mode: 'HTML', disable_web_page_preview: true });
-
-    } catch (error) {
-        console.error('Upload Handler Error:', error);
-        await bot.sendMessage(chatId, `❌ <b>Error:</b> ${escapeHtml(error.message)}`, { parse_mode: 'HTML' });
+    } catch (error) {        console.error('Upload Handler Error:', error);
+        if (error.message.includes('413')) {
+            await bot.sendMessage(chatId, `❌ <b>Error:</b> The video file is too large for the standard Telegram Bot API (Limit is 50MB).`, { parse_mode: 'HTML' });
+        } else {
+            await bot.sendMessage(chatId, `❌ <b>Error:</b> ${escapeHtml(error.message)}`, { parse_mode: 'HTML' });
+        }
     } finally {
         if (tempFilePath) {
             cleanupTempFile(tempFilePath);
@@ -133,7 +110,7 @@ async function handleUpload(bot, msg, match) {
 }
 
 // ==========================================
-// UPDATED: Handle Auto-Batch
+// UPDATED: Handle Auto-Batch (Direct to Telegram)
 // ==========================================
 async function handleAutoBatch(bot, msg, match) {
     const chatId = msg.chat.id;
@@ -145,64 +122,49 @@ async function handleAutoBatch(bot, msg, match) {
         return bot.sendMessage(chatId, "⚠️ Usage: <code>/auto &lt;anime_url&gt; [start_ep] [end_ep]</code>", { parse_mode: 'HTML' });
     }
 
-    await bot.sendMessage(chatId, `🤖 <b>Auto-Batch Started!</b>\nProcessing episodes ${startEp} to ${endEp}.`, { parse_mode: 'HTML' });
+    await bot.sendMessage(chatId, `🤖 <b>Auto-Batch Started!</b>\nDownloading and sending episodes ${startEp} to ${endEp} directly to chat.`, { parse_mode: 'HTML' });
 
     let tempFilePath = null;
 
     try {
-        const episodes = await getEpisodes(animeUrl);        if (episodes.length === 0) throw new Error('No episodes found.');
+        const episodes = await getEpisodes(animeUrl);
+        if (episodes.length === 0) throw new Error('No episodes found.');
         
-        // Extract series name from the main URL
         const { animeName } = parseAnimeInfoFromUrl(animeUrl);
-
         const targetEpisodes = episodes.slice(startEp - 1, endEp);
-        const generatedLinks = [];
 
         for (const ep of targetEpisodes) {
             try {
-                await bot.sendMessage(chatId, `⏳ <b>Processing Episode ${ep.number}...</b>\n1. Extracting source...`, { parse_mode: 'HTML' });
+                await bot.sendMessage(chatId, `⏳ <b>Processing Episode ${ep.number}...</b>`, { parse_mode: 'HTML' });
                 
-                // 1. Get Video URL (Pass the full episode URL)
                 const videoUrl = await getVideoSourceUrl(ep.url);
                 
-                // 2. Download & Convert to MP4
                 await bot.sendChatAction(chatId, 'upload_video');
                 tempFilePath = await downloadAndConvertToMp4(videoUrl, animeName, ep.number);
-                const fileSize = fs.statSync(tempFilePath).size;
+                const fileSizeMB = (fs.statSync(tempFilePath).size / 1024 / 1024).toFixed(2);
                 
-                // 3. Initialize Upload
-                const filename = `${animeName}, Episode ${ep.number}.mp4`;
-                await bot.sendMessage(chatId, `📤 Uploading "${filename}" (${(fileSize / 1024 / 1024).toFixed(1)} MB)...`, { parse_mode: 'HTML' });
+                await bot.sendMessage(chatId, `⬆️ Sending Ep ${ep.number} (${fileSizeMB} MB)...`);
                 
-                const initData = await initUpload(filename, fileSize);
-                const uploadUrl = initData.upload_url || initData.url || initData.presigned_url;
-                if (!uploadUrl) throw new Error('Storage API did not return an upload URL.');
+                // 🚀 SEND DIRECTLY TO TELEGRAM                await bot.sendVideo(chatId, tempFilePath, {
+                    caption: `📺 <b>${escapeHtml(animeName)}</b>\n🔹 Episode ${ep.number}`,
+                    parse_mode: 'HTML',
+                    supportsStreaming: true
+                });
 
-                // 4. Stream to Storage
-                await uploadFileToUrl(uploadUrl, tempFilePath);
-                
-                // 5. Extract final link
-                const finalLink = initData.file_url || initData.link || `https://storage.to/f/${initData.file_id || initData.id}`;
-                generatedLinks.push({ ep: ep.number, link: finalLink });
+                await bot.sendMessage(chatId, `✅ Episode ${ep.number} sent!`);
                 
             } catch (epError) {
                 console.error(`Error on Ep ${ep.number}:`, epError);
-                generatedLinks.push({ ep: ep.number, link: `❌ Failed: ${epError.message}` });
+                await bot.sendMessage(chatId, `❌ Failed Ep ${ep.number}: ${escapeHtml(epError.message)}`, { parse_mode: 'HTML' });
             } finally {
-                if (tempFilePath) cleanupTempFile(tempFilePath);
+                if (tempFilePath) {
+                    cleanupTempFile(tempFilePath);
+                    tempFilePath = null;
+                }
             }
         }
 
-        // 6. Send Summary
-        let summary = `✅ <b>Batch Complete!</b>\n\nGenerated Links:\n`;
-        generatedLinks.forEach(item => {
-            if (item.link.startsWith('http')) {
-                summary += `🔹 <b>Episode ${item.ep}:</b> <a href="${item.link}">Download/Watch</a>\n`;
-            } else {
-                summary += `🔹 <b>Episode ${item.ep}:</b> ${escapeHtml(item.link)}\n`;            }
-        });
-
-        await bot.sendMessage(chatId, summary, { parse_mode: 'HTML', disable_web_page_preview: true });
+        await bot.sendMessage(chatId, `🎉 <b>Batch Complete!</b> All requested episodes have been sent to the chat.`, { parse_mode: 'HTML' });
 
     } catch (error) {
         console.error('Auto Batch Error:', error);
