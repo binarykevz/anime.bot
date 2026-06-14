@@ -64,7 +64,7 @@ async function getEpisodes(animeUrl) {
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log(`[Debug] Launching Puppeteer (100% Safe Passive Mode) for: ${episodeUrl}`);
+    console.log(`[Debug] Launching Puppeteer (Axios-First Strategy) for: ${episodeUrl}`);
     
     let browser;
     try {
@@ -91,7 +91,7 @@ async function getVideoSourceUrl(episodeUrl) {
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
 
-        // 🚀 NO setRequestInterception! We only use passive CDP listening to guarantee zero blocking.
+        // NO setRequestInterception! We only use passive CDP listening.
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
 
@@ -126,10 +126,8 @@ async function getVideoSourceUrl(episodeUrl) {
         console.log(`[Debug] Navigating to episode page...`);
         await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Wait for JS to render the player
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // Try to click play button
         await page.evaluate(() => {
             const btn = document.querySelector('.btn-play, .play-button, a[href="#player"], .vscontrol, .play-btn, button, .player-overlay, .play');
             if (btn) btn.click();
@@ -142,19 +140,50 @@ async function getVideoSourceUrl(episodeUrl) {
             return videoUrl;
         }
 
-        // 🚀 IF WE FOUND THE PLAYER HOST, OPEN IT IN A NEW TAB
+        // 🚀 NEW STRATEGY: IF WE FOUND THE PLAYER HOST, FETCH IT WITH AXIOS FIRST
         if (playerUrl) {
-            console.log(`[Debug] Opening Video Host in new tab: ${playerUrl}`);
-            const playerPage = await browser.newPage();            
+            console.log(`[Debug] Attempting to fetch Video Host via Axios (Bypasses Puppeteer blocks): ${playerUrl}`);
+            try {
+                const playerRes = await axios.get(playerUrl, {
+                    headers: {                        'User-Agent': headers['User-Agent'],
+                        'Referer': episodeUrl,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                    },
+                    timeout: 10000
+                });
+                
+                const playerHtml = playerRes.data;
+                
+                // Regex to find .m3u8 or .mp4 URLs in the HTML source
+                const videoMatch = playerHtml.match(/(https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)[^\s"'<>\\]*)/);
+                if (videoMatch && videoMatch[1]) {
+                    videoUrl = videoMatch[1].replace(/\\/g, '');
+                    console.log(`[Debug] ✅ Extracted video URL from player HTML via Axios: ${videoUrl}`);
+                    return videoUrl;
+                }
+                console.log(`[Debug] ⚠️ Axios fetched the page, but no video URL found in HTML.`);
+            } catch (axiosErr) {
+                console.log(`[Debug] ⚠️ Axios failed to fetch player URL: ${axiosErr.message}`);
+            }
+            
+            // Fallback to Puppeteer if Axios fails
+            console.log(`[Debug] Falling back to Puppeteer for player host...`);
+            const playerPage = await browser.newPage();
+            
+            // EXPLICITLY CLEAR ANY INTERCEPTION TO PREVENT ERR_BLOCKED_BY_CLIENT
+            await playerPage.setRequestInterception(false);
+            
             await playerPage.evaluateOnNewDocument(() => {
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
             });
             await playerPage.setUserAgent(headers['User-Agent']);
             await playerPage.setExtraHTTPHeaders({ 'Referer': episodeUrl });
             
-            // 🚀 NO setRequestInterception here either! 100% safe.
             const playerClient = await playerPage.target().createCDPSession();
             await playerClient.send('Network.enable');
+            
+            // EXPLICITLY CLEAR ANY BLOCKED URLS
+            await playerClient.send('Network.setBlockedURLs', { urls: [] });
 
             playerClient.on('Network.responseReceived', (event) => {
                 const url = event.response.url;
@@ -165,22 +194,23 @@ async function getVideoSourceUrl(episodeUrl) {
                             console.log(`[Debug] ✅ Intercepted video URL from player host: ${videoUrl}`);
                         }
                     }
-                }
-            });
+                }            });
 
-            await playerPage.goto(playerUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            
-            // Try clicking play on the player page
-            await playerPage.evaluate(() => {
-                const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button, .plyr__control, .video-js, .center-btn');
-                if (btn) btn.click();
-            }).catch(() => {});
+            try {
+                await playerPage.goto(playerUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                
+                await playerPage.evaluate(() => {
+                    const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button, .plyr__control, .video-js, .center-btn');
+                    if (btn) btn.click();
+                }).catch(() => {});
 
-            // Wait for the stream to start
-            await new Promise(resolve => setTimeout(resolve, 5000));
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            } catch (gotoErr) {
+                console.log(`[Debug] ⚠️ Puppeteer goto failed: ${gotoErr.message}`);
+            }
             
             if (videoUrl) {
-                console.log(`[Debug] ⏭️ Success: Video URL captured from player host!`);
+                console.log(`[Debug] ⏭️ Success: Video URL captured from player host via Puppeteer fallback!`);
                 return videoUrl;
             }
         }
@@ -194,6 +224,7 @@ async function getVideoSourceUrl(episodeUrl) {
         if (browser) {
             await browser.close();
         }
-    }}
+    }
+}
 
 module.exports = { getEpisodes, getVideoSourceUrl };
