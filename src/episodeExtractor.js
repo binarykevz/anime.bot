@@ -53,16 +53,20 @@ async function getEpisodes(animeUrl) {
 async function getVideoSourceUrl(episodeUrl, proxyConfig) {
     let browser;
     try {
+        // 🚀 BULLETPROOF PROXY SETUP: Use SOCKS5 scheme + page.authenticate()
+        const cleanIpPort = proxyConfig.ipPort.trim();
+        const cleanUser = proxyConfig.username.trim();
+        const cleanPass = proxyConfig.password.trim();
+        
+        const proxyServerUrl = `socks5://${cleanIpPort}`;
+        console.log('[Puppeteer] 🌐 Using SOCKS5 Proxy: ' + proxyServerUrl);
+
         const launchArgs = [
             '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
             '--disable-gpu', '--no-zygote', '--disable-extensions',
-            '--disable-background-networking', '--disable-blink-features=AutomationControlled'
+            '--disable-background-networking', '--disable-blink-features=AutomationControlled',
+            `--proxy-server=${proxyServerUrl}`
         ];
-        
-        // 🚀 CRITICAL FIX: Use SOCKS5 for Puppeteer to bypass ERR_NO_SUPPORTED_PROXIES
-        const proxyServerUrl = `socks5://${proxyConfig.ipPort}`;
-        launchArgs.push('--proxy-server=' + proxyServerUrl);
-        console.log('[Puppeteer] 🌐 Using SOCKS5 Proxy: ' + proxyServerUrl);
 
         browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
@@ -71,10 +75,10 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
 
         const page = await browser.newPage();
         
-        // Authenticate the SOCKS5 proxy
-        if (proxyConfig.username && proxyConfig.password) {
-            await page.authenticate({ username: proxyConfig.username, password: proxyConfig.password });
-            console.log('[Puppeteer] 🔑 Proxy credentials applied.');
+        // 🚀 CRITICAL: Authenticate the proxy using Puppeteer's native method
+        if (cleanUser && cleanPass) {
+            await page.authenticate({ username: cleanUser, password: cleanPass });
+            console.log('[Puppeteer] 🔑 Proxy credentials applied securely.');
         }
 
         await page.evaluateOnNewDocument(function() { Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } }); });
