@@ -12,9 +12,6 @@ const headers = {
     'Referer': BASE_URL + '/'
 };
 
-// 🚀 Read proxy directly from environment variables
-const PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
-
 async function getEpisodes(animeUrl) {
     try {
         let slugMatch = animeUrl.match(/\/([^/]+?)(?:-episode-\d+|-ep-\d+)?(?:-in-english-(?:subbed|dubbed))?\/?$/i);
@@ -47,12 +44,13 @@ async function getEpisodes(animeUrl) {
             const epNum = epNumMatch ? epNumMatch[1] : '1';
             episodes.push({ number: epNum, url: animeUrl, id: animeUrl });
         }
-        return episodes;    } catch (error) {
+        return episodes;
+    } catch (error) {
         throw new Error('Failed to fetch episode list: ' + error.message);
     }
 }
 
-async function getVideoSourceUrl(episodeUrl) {
+async function getVideoSourceUrl(episodeUrl, proxyUrl) {
     let browser;
     try {
         const launchArgs = [
@@ -61,16 +59,14 @@ async function getVideoSourceUrl(episodeUrl) {
             '--disable-background-networking', '--disable-blink-features=AutomationControlled'
         ];
         
-        // 🚀 Tell Puppeteer to use the proxy from ENV
-        if (PROXY_URL) {
-            launchArgs.push('--proxy-server=' + PROXY_URL);
-            console.log('[Puppeteer] 🌐 Using Proxy from ENV: ' + PROXY_URL.replace(/:\/\/.*@/, '://***:***@'));
+        if (proxyUrl) {
+            launchArgs.push('--proxy-server=' + proxyUrl);
+            console.log('[Puppeteer] 🌐 Using Proxy: ' + proxyUrl.replace(/:\/\/.*@/, '://***:***@'));
         }
 
         browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
-            args: launchArgs,
-            timeout: 30000 
+            args: launchArgs, timeout: 30000 
         });
 
         const page = await browser.newPage();
@@ -96,6 +92,7 @@ async function getVideoSourceUrl(episodeUrl) {
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
         try { await page.evaluate(function() { const btn = document.querySelector('.btn-play, .play-button, a[href="#player"], .vscontrol, .play-btn, button, .player-overlay, .play'); if (btn) btn.click(); }); } catch (e) {}
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
+
         if (!playerUrl) throw new Error('Could not intercept video host URL from main page.');
 
         let videoId = null;
@@ -109,11 +106,11 @@ async function getVideoSourceUrl(episodeUrl) {
 
         const apiUrl = 'https://megaplay.buzz/stream/getSources?id=' + videoId;
         
-        // 🚀 USE PROXY-AGENT FOR THE API CALL (Automatically reads from ENV)
+        // 🚀 USE PROXY-AGENT FOR THE API CALL
         const axiosConfig = {
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': playerUrl, 'User-Agent': headers['User-Agent'] },
             timeout: 15000,
-            httpsAgent: new ProxyAgent(),
+            httpsAgent: new ProxyAgent(proxyUrl),
             proxy: false 
         };
 
