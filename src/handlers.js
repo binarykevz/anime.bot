@@ -6,7 +6,7 @@ const { getEpisodes, getVideoSourceUrl } = require('./episodeExtractor');
 const { downloadAndConvertToMp4, cleanupTempFile } = require('./downloader');
 
 // 🚀 HARDCODED PROXIFLY API KEY
-const PROXIFLY_API_KEY = 'DQTYuQQURMesi7qG1o8DuSFXTKsge6DHapy57DUXQLKz';
+const PROXIFLY_API_KEY = 'DfsoKCc4P27Thn498EQUPAyXPyzs6Y1QLNHYdmvTowou';
 
 function escapeHtml(text) {
     if (!text) return '';
