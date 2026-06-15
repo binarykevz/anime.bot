@@ -1,4 +1,4 @@
-const { gotScraping } = require('got-scraping');
+const axios = require('axios');
 const puppeteer = require('puppeteer');
 const proxyChain = require('proxy-chain');
 
@@ -46,16 +46,14 @@ async function getEpisodes(watchUrl) {
             }
         `;
         
-        const response = await gotScraping.post('https://graphql.anilist.co', {
-            json: {                query: query,
-                variables: { id: parseInt(alId) }
-            },
-            responseType: 'json',
-            timeout: { request: 10000 },
-            headers: headers
+        const response = await axios.post('https://graphql.anilist.co', {
+            query: query,            variables: { id: parseInt(alId) }
+        }, {
+            headers: headers,
+            timeout: 10000
         });
         
-        const data = response.body;
+        const data = response.data;
         
         if (data.errors) {
             throw new Error(data.errors[0].message);
@@ -96,9 +94,9 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
         const alMatch = episodeUrl.match(/[?&]al=(\d+)/);
         const epMatch = episodeUrl.match(/[?&]e=(\d+)/);
         
-        if (!alMatch) {            throw new Error('Could not extract AniList ID from URL');
-        }
-        
+        if (!alMatch) {
+            throw new Error('Could not extract AniList ID from URL');
+        }        
         const alId = alMatch[1];
         const epNum = epMatch ? epMatch[1] : '1';
         
@@ -110,17 +108,15 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             }
         `;
         
-        const response = await gotScraping.post('https://graphql.anilist.co', {
-            json: {
-                query: query,
-                variables: { id: parseInt(alId) }
-            },
-            responseType: 'json',
-            timeout: { request: 10000 },
-            headers: headers
+        const response = await axios.post('https://graphql.anilist.co', {
+            query: query,
+            variables: { id: parseInt(alId) }
+        }, {
+            headers: headers,
+            timeout: 10000
         });
         
-        const malId = response.body.data.Media.idMal;
+        const malId = response.data.data.Media.idMal;
         
         const source = VIDEO_SOURCES[0];
         let videoPageUrl = source.base + source.path
@@ -145,11 +141,11 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             '--disable-background-networking', '--disable-blink-features=AutomationControlled',
             '--proxy-server=' + localProxyUrl
         ];
-                browser = await puppeteer.launch({
+        
+        browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
             args: launchArgs, timeout: 30000
-        });
-        
+        });        
         const page = await browser.newPage();
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': BASE_URL + '/' });
@@ -194,10 +190,10 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
     } catch (error) {
         throw new Error('Failed to extract video URL: ' + error.message);
     } finally {
-        if (browser) await browser.close();        if (localProxyUrl) {
+        if (browser) await browser.close();
+        if (localProxyUrl) {
             await proxyChain.closeAnonymizedProxy(localProxyUrl, true);
         }
-    }
-}
+    }}
 
 module.exports = { getEpisodes, getVideoSourceUrl };
