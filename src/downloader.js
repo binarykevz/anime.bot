@@ -6,7 +6,6 @@ const os = require('os');
 
 async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, proxyUrl) {
     return new Promise((resolve, reject) => {
-        // Simplified arguments for maximum compatibility with all yt-dlp versions
         const args = [
             videoUrl, '-o', tempFilePath,
             '--add-header', 'Referer: ' + refererUrl,
@@ -17,9 +16,12 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, 
             '--retries', '3'
         ];
 
-        if (proxyUrl) {
+        // 🚀 STRICT CHECK: Only use proxy if it's a valid, non-empty string starting with http
+        if (proxyUrl && typeof proxyUrl === 'string' && proxyUrl.trim() !== '' && proxyUrl.startsWith('http')) {
             args.push('--proxy', proxyUrl);
             console.log('[yt-dlp] 🌐 Using Proxy: ' + proxyUrl);
+        } else {
+            console.log('[yt-dlp] ⚠️ No valid proxy provided. Trying direct connection...');
         }
 
         const ytDlp = spawn('yt-dlp', args);
