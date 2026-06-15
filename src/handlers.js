@@ -4,7 +4,6 @@ const { getSearchResults } = require('./scraper');
 const { getEpisodes, getVideoSourceUrl } = require('./episodeExtractor');
 const { downloadAndConvertToMp4, cleanupTempFile } = require('./downloader');
 
-// 🚀 YOUR WEBSHARE PROXY LIST (Rotates automatically)
 const PROXY_USER = 'bgfqfdjy';
 const PROXY_PASS = 'xgrj384kx4yw';
 const PROXY_LIST = [
@@ -59,24 +58,23 @@ async function handleSearch(bot, msg, match) {
 async function processAndSendVideo(bot, chatId, episodeUrl) {
     const MAX_ATTEMPTS = 5;
     let tempFilePath = null;
+    let lastError = 'Unknown error';
     const info = parseAnimeInfoFromUrl(episodeUrl);
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         console.log('\n[Handler] --- Attempt ' + attempt + '/' + MAX_ATTEMPTS + ' ---');
-        
-        // 🚀 Get the next proxy from the Webshare list
         const proxyUrl = getNextProxyUrl();
         console.log('[Handler] 🌐 Using Proxy: ' + proxyUrl.replace(/:\/\/.*@/, '://***:***@'));
         
         try {
             await bot.sendMessage(chatId, '🔍 Extracting video source (Attempt ' + attempt + ')...');
             const videoUrl = await getVideoSourceUrl(episodeUrl, proxyUrl);
+            console.log('[Handler] ✅ Extraction successful. Video URL:', videoUrl.substring(0, 50) + '...');
 
             await bot.sendChatAction(chatId, 'upload_video');
             await bot.sendMessage(chatId, '⬇️ Downloading and converting to MP4...');
             tempFilePath = await downloadAndConvertToMp4(videoUrl, info.animeName, info.epNum, episodeUrl, proxyUrl);
             
-            // 🚀 CALCULATE AND DISPLAY FILE SIZE
             const fileSizeBytes = fs.statSync(tempFilePath).size;
             const fileSizeMB = (fileSizeBytes / 1024 / 1024).toFixed(2);
             
@@ -91,13 +89,20 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
             return true;
             
         } catch (error) {
-            console.error('[Handler] Attempt ' + attempt + ' failed:', error.message);
+            lastError = error.message;
+            console.error('[Handler] ❌ Attempt ' + attempt + ' failed:', lastError);
             if (tempFilePath && fs.existsSync(tempFilePath)) {
                 cleanupTempFile(tempFilePath);
                 tempFilePath = null;
             }
+            // Brief pause before next attempt
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
     }
+    
+    // 🚀 REPORT THE EXACT ERROR TO THE USER
+    console.error('[Handler] 💀 ALL ATTEMPTS FAILED. Last error:', lastError);
+    await bot.sendMessage(chatId, '❌ <b>Download Failed.</b>\n\n<b>Reason:</b> ' + escapeHtml(lastError) + '\n\n<i>Please share this error message with the developer.</i>', { parse_mode: 'HTML' });
     return false;
 }
 
@@ -107,10 +112,7 @@ async function handleUpload(bot, msg, match) {
     if (!episodeUrl || !episodeUrl.includes('http')) return bot.sendMessage(chatId, "⚠️ Usage: <code>/upload &lt;episode_url&gt;</code>", { parse_mode: 'HTML' });
 
     await bot.sendMessage(chatId, "⏳ Starting process... Extracting and downloading video.");
-    const success = await processAndSendVideo(bot, chatId, episodeUrl);
-    if (!success) {
-        await bot.sendMessage(chatId, '❌ <b>Error:</b> Download failed after 5 attempts. All proxies might be blocked or the video URL expired.', { parse_mode: 'HTML' });
-    }
+    await processAndSendVideo(bot, chatId, episodeUrl);
 }
 
 async function handleAutoBatch(bot, msg, match) {
