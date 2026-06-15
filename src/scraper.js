@@ -1,13 +1,6 @@
-
-const axios = require('axios');
+const { gotScraping } = require('got-scraping');
 
 const ANILIST_GRAPHQL = 'https://graphql.anilist.co';
-
-const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Content-Type': 'application/json',
-    'Accept': 'application/json'
-};
 
 const SEARCH_QUERY = `
 query ($search: String, $page: Int, $perPage: Int) {
@@ -36,23 +29,30 @@ async function getSearchResults(query) {
     try {
         console.log(`[AniList] Searching for: ${query}`);
         
-        const response = await axios.post(ANILIST_GRAPHQL, {
-            query: SEARCH_QUERY,
-            variables: {
-                search: query,
-                page: 1,
-                perPage: 10
+        const response = await gotScraping.post(ANILIST_GRAPHQL, {
+            json: {
+                query: SEARCH_QUERY,
+                variables: {
+                    search: query,
+                    page: 1,
+                    perPage: 10
+                }
+            },
+            responseType: 'json',
+            timeout: { request: 10000 },
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json'
             }
-        }, {
-            headers: headers,
-            timeout: 10000
         });
 
-        if (response.data.errors) {
-            throw new Error(response.data.errors[0].message);
+        const data = response.body;
+
+        if (data.errors) {
+            throw new Error(data.errors[0].message);
         }
 
-        const results = response.data.data.Page.media;
+        const results = data.data.Page.media;
         const formattedResults = results.map(anime => {
             const title = anime.title.english || anime.title.romaji || 'Unknown';
             const year = anime.seasonYear || '';
