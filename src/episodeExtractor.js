@@ -1,145 +1,215 @@
 
 const axios = require('axios');
-const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
 const { ProxyAgent } = require('proxy-agent');
+const proxyChain = require('proxy-chain');
 
-const BASE_URL = 'https://anikai.watch';
+const BASE_URL = 'https://anidoor.me';
+const JIKAN_API = 'https://api.jikan.moe/v4';
+
 const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'application/json',
     'Referer': BASE_URL + '/'
 };
 
-async function getEpisodes(animeUrl) {
+const VIDEO_SOURCES = [
+    {
+        id: "megaplay-sub",
+        name: "MegaPlay Sub",
+        base: "https://megaplay.buzz",
+        path: "/stream/ani/{al}/{e}/sub",
+        type: "anime",
+        dub: false,
+        default: true
+    },
+    {
+        id: "megaplay-sub-alt",
+        name: "MegaPlay Sub (MAL)",
+        base: "https://megaplay.buzz",
+        path: "/stream/mal/{mal}/{e}/sub",
+        type: "anime",
+        dub: false,
+        default: false
+    }
+];
+
+async function getEpisodes(watchUrl) {
     try {
-        let slugMatch = animeUrl.match(/\/([^/]+?)(?:-episode-\d+|-ep-\d+)?(?:-in-english-(?:subbed|dubbed))?\/?$/i);
-        let slug = slugMatch ? slugMatch[1] : animeUrl.split('/').filter(Boolean).pop();
-        let seriesUrl = animeUrl;
-        if (animeUrl.includes('-episode-') || animeUrl.includes('-ep-')) {
-            seriesUrl = BASE_URL + '/series/' + slug + '/';
+        console.log(`[Debug] Fetching episodes from: ${watchUrl}`);
+        
+        const alMatch = watchUrl.match(/[?&]al=(\d+)/);
+        if (!alMatch) {
+            throw new Error('Could not extract AniList ID from URL');
         }
-        let htmlRes;
-        try {
-            htmlRes = await axios.get(seriesUrl, { headers: headers, timeout: 10000 });
-        } catch (err) {
-            seriesUrl = BASE_URL + '/' + slug + '/';
-            htmlRes = await axios.get(seriesUrl, { headers: headers, timeout: 10000 });
-        }
-        const $ = cheerio.load(htmlRes.data);
-        const episodes = [];
-        $('a').each(function(i, el) {
-            const href = $(el).attr('href');
-            if (href && (href.includes('-episode-') || href.includes('-ep-')) && href.includes(BASE_URL)) {
-                const epNumMatch = href.match(/(?:-episode-|-ep-)(\d+)/i);
-                const epNum = epNumMatch ? epNumMatch[1] : 'Ep ' + (i + 1);
-                if (!episodes.find(function(ep) { return ep.url === href; })) {
-                    episodes.push({ number: epNum, url: href, id: href });
+        const alId = alMatch[1];
+        
+        const query = `
+            query($id: Int) {
+                Media(id: $id, type: ANIME) {
+                    id                    idMal
+                    episodes
+                    title {
+                        english
+                        romaji
+                    }
                 }
             }
+        `;
+        
+        const anilistRes = await axios.post('https://graphql.anilist.co', {
+            query: query,
+            variables: { id: parseInt(alId) }
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': headers['User-Agent']
+            },
+            timeout: 10000
         });
-        if (episodes.length === 0) {
-            const epNumMatch = animeUrl.match(/(?:-episode-|-ep-)(\d+)/i);
-            const epNum = epNumMatch ? epNumMatch[1] : '1';
-            episodes.push({ number: epNum, url: animeUrl, id: animeUrl });
+        
+        if (anilistRes.data.errors) {
+            throw new Error(anilistRes.data.errors[0].message);
         }
+        
+        const animeData = anilistRes.data.data.Media;
+        const malId = animeData.idMal;
+        const totalEps = animeData.episodes || 12;
+        const title = animeData.title.english || animeData.title.romaji || 'Unknown';
+        
+        console.log(`[Debug] ✅ Found anime: ${title} (MAL ID: ${malId}, Episodes: ${totalEps})`);
+        
+        const episodes = [];
+        for (let i = 1; i <= totalEps; i++) {
+            episodes.push({
+                number: i.toString(),
+                url: `${BASE_URL}/watch/?al=${alId}&e=${i}`,
+                id: `${alId}-${i}`,
+                alId: alId,
+                malId: malId
+            });
+        }
+        
+        console.log(`[Debug] ✅ Generated ${episodes.length} episodes.`);
         return episodes;
+        
     } catch (error) {
-        throw new Error('Failed to fetch episode list: ' + error.message);
-    }
-}
+        console.error('Episode Extraction Error:', error.message);
+        throw new Error(`Failed to fetch episode list: ${error.message}`);
+    }}
 
 async function getVideoSourceUrl(episodeUrl, proxyConfig) {
     let browser;
+    let localProxyUrl = null;
+    
     try {
-        // 🚀 BULLETPROOF PROXY SETUP: Use SOCKS5 scheme + page.authenticate()
-        const cleanIpPort = proxyConfig.ipPort.trim();
-        const cleanUser = proxyConfig.username.trim();
-        const cleanPass = proxyConfig.password.trim();
+        const alMatch = episodeUrl.match(/[?&]al=(\d+)/);
+        const epMatch = episodeUrl.match(/[?&]e=(\d+)/);
         
-        const proxyServerUrl = `socks5://${cleanIpPort}`;
-        console.log('[Puppeteer] 🌐 Using SOCKS5 Proxy: ' + proxyServerUrl);
-
+        if (!alMatch) {
+            throw new Error('Could not extract AniList ID from URL');
+        }
+        
+        const alId = alMatch[1];
+        const epNum = epMatch ? epMatch[1] : '1';
+        
+        const query = `
+            query($id: Int) {
+                Media(id: $id, type: ANIME) {
+                    idMal
+                }
+            }
+        `;
+        
+        const anilistRes = await axios.post('https://graphql.anilist.co', {
+            query: query,
+            variables: { id: parseInt(alId) }
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': headers['User-Agent']
+            },
+            timeout: 10000
+        });
+        
+        const malId = anilistRes.data.data.Media.idMal;
+        
+        const source = VIDEO_SOURCES[0];
+        let videoPageUrl = source.base + source.path
+            .replace('{al}', alId)
+            .replace('{mal}', malId || '')
+            .replace('{e}', epNum);
+        
+        console.log(`[Debug] 🎬 Video page URL: ${videoPageUrl}`);
+        
+        console.log('[Puppeteer] 🌐 Setting up local proxy forwarder for ' + proxyConfig.ipPort + '...');
+        localProxyUrl = await proxyChain.anonymizeProxy({
+            host: proxyConfig.ipPort.split(':')[0],
+            port: parseInt(proxyConfig.ipPort.split(':')[1]),            username: proxyConfig.username,
+            password: proxyConfig.password
+        });
+        console.log('[Puppeteer] ✅ Local proxy running at: ' + localProxyUrl);
+        
         const launchArgs = [
             '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
             '--disable-gpu', '--no-zygote', '--disable-extensions',
             '--disable-background-networking', '--disable-blink-features=AutomationControlled',
-            `--proxy-server=${proxyServerUrl}`
+            '--proxy-server=' + localProxyUrl
         ];
-
+        
         browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
-            args: launchArgs, timeout: 30000 
+            args: launchArgs, timeout: 30000
         });
-
-        const page = await browser.newPage();
         
-        // 🚀 CRITICAL: Authenticate the proxy using Puppeteer's native method
-        if (cleanUser && cleanPass) {
-            await page.authenticate({ username: cleanUser, password: cleanPass });
-            console.log('[Puppeteer] 🔑 Proxy credentials applied securely.');
-        }
-
-        await page.evaluateOnNewDocument(function() { Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } }); });
+        const page = await browser.newPage();
         await page.setUserAgent(headers['User-Agent']);
-        await page.setExtraHTTPHeaders({ 'Referer': 'https://anikai.watch/' });
-
+        await page.setExtraHTTPHeaders({ 'Referer': BASE_URL + '/' });
+        
         const client = await page.target().createCDPSession();
         await client.send('Network.enable');
-        let playerUrl = null;
-
+        
+        let videoUrl = null;
+        
         client.on('Network.responseReceived', function(event) {
             const url = event.response.url;
-            const type = event.type;
-            if (type === 'Document' && !url.includes('anikai.watch') && !url.includes('cloudflare') && !url.includes('google')) {
-                if (url.includes('megaplay') || url.includes('stream') || url.includes('player') || url.includes('video') || url.includes('embed') || url.includes('buzz')) {
-                    if (!playerUrl) playerUrl = url;
+            if (url.includes('.m3u8') || url.includes('.mp4')) {
+                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('.woff')) {
+                    if (!videoUrl) {
+                        videoUrl = url;
+                        console.log(`[Debug] ✅ Intercepted video URL: ${videoUrl}`);
+                    }
                 }
             }
         });
-
-        console.log('[Puppeteer] 🌐 Navigating to episode page...');
-        await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await new Promise(function(resolve) { setTimeout(resolve, 3000); });
-        try { await page.evaluate(function() { const btn = document.querySelector('.btn-play, .play-button, a[href="#player"], .vscontrol, .play-btn, button, .player-overlay, .play'); if (btn) btn.click(); }); } catch (e) {}
-        await new Promise(function(resolve) { setTimeout(resolve, 3000); });
-
-        if (!playerUrl) throw new Error('Could not intercept video host URL from main page.');
-
-        let videoId = null;
-        const streamMatch = playerUrl.match(/\/(?:stream|embed)[^/]*\/(\d+)/);
-        if (streamMatch && streamMatch[1]) videoId = streamMatch[1];
-        else {
-            const fallbackMatch = playerUrl.match(/\/(\d{4,})(?:\/|$)/);
-            if (fallbackMatch && fallbackMatch[1]) videoId = fallbackMatch[1];
-        }
-        if (!videoId) throw new Error('Could not extract ID from player URL: ' + playerUrl);
-
-        const apiUrl = 'https://megaplay.buzz/stream/getSources?id=' + videoId;
         
-        // Axios uses HTTP proxy with inline auth (works perfectly)
-        const axiosConfig = {
-            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': playerUrl, 'User-Agent': headers['User-Agent'] },
-            timeout: 15000,
-            httpsAgent: new ProxyAgent(proxyConfig.fullHttp),
-            proxy: false 
-        };
-
-        const apiRes = await axios.get(apiUrl, axiosConfig);
-
-        if (apiRes.data && apiRes.data.sources && apiRes.data.sources.file) {
-            const videoUrl = apiRes.data.sources.file;
-            console.log('[Debug] ✅ SUCCESS! Extracted video URL via API.');
-            return videoUrl;
-        } else {
-            throw new Error('MegaPlay API did not return a video source.');
+        console.log('[Puppeteer] 🌐 Navigating to video page...');
+        await page.goto(videoPageUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        
+        await new Promise(function(resolve) { setTimeout(resolve, 5000); });
+        
+        try {
+            await page.evaluate(function() {
+                const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button');
+                if (btn) btn.click();
+            });
+        } catch (e) {}
+                await new Promise(function(resolve) { setTimeout(resolve, 3000); });
+        
+        if (!videoUrl) {
+            throw new Error('Could not intercept video URL from player page.');
         }
+        
+        return videoUrl;
+        
     } catch (error) {
         throw new Error('Failed to extract video URL: ' + error.message);
     } finally {
         if (browser) await browser.close();
+        if (localProxyUrl) {
+            await proxyChain.closeAnonymizedProxy(localProxyUrl, true);
+        }
     }
 }
 
-module.exports = { getEpisodes: getEpisodes, getVideoSourceUrl: getVideoSourceUrl };
+module.exports = { getEpisodes, getVideoSourceUrl };
