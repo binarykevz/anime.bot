@@ -1,10 +1,10 @@
-
+cat << 'EOF' > /home/ubuntu/anime.bot/src/downloader.js
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, proxyUrl) {
+async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, proxyConfig) {
     return new Promise((resolve, reject) => {
         const args = [
             videoUrl, '-o', tempFilePath,
@@ -15,9 +15,10 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, 
             '--socket-timeout', '20', '--retries', '3'
         ];
 
-        if (proxyUrl) {
-            args.push('--proxy', proxyUrl);
-            console.log('[yt-dlp] 🌐 Using Proxy: ' + proxyUrl.replace(/:\/\/.*@/, '://***:***@'));
+        // 🚀 yt-dlp natively supports inline auth (http://user:pass@ip:port)
+        if (proxyConfig && proxyConfig.fullHttp) {
+            args.push('--proxy', proxyConfig.fullHttp);
+            console.log('[yt-dlp] 🌐 Using Proxy: ' + proxyConfig.fullHttp.replace(/:\/\/.*@/, '://***:***@'));
         }
 
         const ytDlp = spawn('yt-dlp', args);
@@ -28,7 +29,7 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, 
     });
 }
 
-async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeUrl, proxyUrl) {
+async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeUrl, proxyConfig) {
     const tempDir = os.tmpdir();
     const safeName = (animeName + '_Ep' + episodeNum).replace(/[\/\\:*?"<>|]/g, '_');
     const tempFilePath = path.join(tempDir, safeName + '_' + Date.now() + '.mp4');
@@ -39,7 +40,7 @@ async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeU
     for (let i = 0; i < referers.length; i++) {
         const referer = referers[i];
         try {
-            await downloadWithYtDlp(videoUrl, tempFilePath, referer, userAgent, proxyUrl);
+            await downloadWithYtDlp(videoUrl, tempFilePath, referer, userAgent, proxyConfig);
             console.log('[yt-dlp] ✅ SUCCESS! Downloaded.');
             return tempFilePath;
         } catch (err) {
@@ -62,4 +63,4 @@ function cleanupTempFile(filePath) {
 }
 
 module.exports = { downloadAndConvertToMp4: downloadAndConvertToMp4, cleanupTempFile: cleanupTempFile };
-
+EOF
