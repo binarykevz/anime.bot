@@ -13,13 +13,15 @@ const PROXY_LIST = [
 ];
 let proxyIndex = 0;
 
-function getNextProxyUrls() {
+function getNextProxyConfig() {
     const ipPort = PROXY_LIST[proxyIndex % PROXY_LIST.length].trim();
     proxyIndex++;
-    // Return both HTTP and SOCKS5 versions to try, as Webshare supports both
     return {
-        http: `http://${PROXY_USER}:${PROXY_PASS}@${ipPort}`,
-        socks5: `socks5://${PROXY_USER}:${PROXY_PASS}@${ipPort}`
+        ipPort: ipPort,
+        username: PROXY_USER,
+        password: PROXY_PASS,
+        fullHttp: `http://${PROXY_USER}:${PROXY_PASS}@${ipPort}`,
+        fullSocks5: `socks5://${PROXY_USER}:${PROXY_PASS}@${ipPort}`
     };
 }
 
@@ -67,20 +69,19 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         console.log('\n[Handler] --- Attempt ' + attempt + '/' + MAX_ATTEMPTS + ' ---');
-        const proxies = getNextProxyUrls();
         
-        // Try HTTP first, if it fails with NO_SUPPORTED_PROXIES, try SOCKS5
-        const proxyToTry = lastError.includes('NO_SUPPORTED_PROXIES') ? proxies.socks5 : proxies.http;
-        console.log('[Handler] 🌐 Using Proxy (' + (proxyToTry.startsWith('socks') ? 'SOCKS5' : 'HTTP') + '): ' + proxyToTry.replace(/:\/\/.*@/, '://***:***@'));
+        // 🚀 Get the proxy config object
+        const proxyConfig = getNextProxyConfig();
+        console.log('[Handler] 🌐 Using Proxy IP: ' + proxyConfig.ipPort);
         
         try {
             await bot.sendMessage(chatId, '🔍 Extracting video source (Attempt ' + attempt + ')...');
-            const videoUrl = await getVideoSourceUrl(episodeUrl, proxyToTry);
+            const videoUrl = await getVideoSourceUrl(episodeUrl, proxyConfig);
             console.log('[Handler] ✅ Extraction successful.');
 
             await bot.sendChatAction(chatId, 'upload_video');
             await bot.sendMessage(chatId, '⬇️ Downloading and converting to MP4...');
-            tempFilePath = await downloadAndConvertToMp4(videoUrl, info.animeName, info.epNum, episodeUrl, proxyToTry);
+            tempFilePath = await downloadAndConvertToMp4(videoUrl, info.animeName, info.epNum, episodeUrl, proxyConfig);
             
             const fileSizeBytes = fs.statSync(tempFilePath).size;
             const fileSizeMB = (fileSizeBytes / 1024 / 1024).toFixed(2);
@@ -107,7 +108,7 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
     }
     
     console.error('[Handler] 💀 ALL ATTEMPTS FAILED. Last error:', lastError);
-    await bot.sendMessage(chatId, '❌ <b>Download Failed.</b>\n\n<b>Reason:</b> ' + escapeHtml(lastError) + '\n\n<i>Please share this exact error with the developer.</i>', { parse_mode: 'HTML' });
+    await bot.sendMessage(chatId, '❌ <b>Download Failed.</b>\n\n<b>Reason:</b> ' + escapeHtml(lastError), { parse_mode: 'HTML' });
     return false;
 }
 
