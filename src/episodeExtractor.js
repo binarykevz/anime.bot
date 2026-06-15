@@ -1,11 +1,8 @@
-
-const axios = require('axios');
+const { gotScraping } = require('got-scraping');
 const puppeteer = require('puppeteer');
-const { ProxyAgent } = require('proxy-agent');
 const proxyChain = require('proxy-chain');
 
 const BASE_URL = 'https://anidoor.me';
-const JIKAN_API = 'https://api.jikan.moe/v4';
 
 const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -22,15 +19,6 @@ const VIDEO_SOURCES = [
         type: "anime",
         dub: false,
         default: true
-    },
-    {
-        id: "megaplay-sub-alt",
-        name: "MegaPlay Sub (MAL)",
-        base: "https://megaplay.buzz",
-        path: "/stream/mal/{mal}/{e}/sub",
-        type: "anime",
-        dub: false,
-        default: false
     }
 ];
 
@@ -47,7 +35,8 @@ async function getEpisodes(watchUrl) {
         const query = `
             query($id: Int) {
                 Media(id: $id, type: ANIME) {
-                    id                    idMal
+                    id
+                    idMal
                     episodes
                     title {
                         english
@@ -57,22 +46,22 @@ async function getEpisodes(watchUrl) {
             }
         `;
         
-        const anilistRes = await axios.post('https://graphql.anilist.co', {
-            query: query,
-            variables: { id: parseInt(alId) }
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': headers['User-Agent']
+        const response = await gotScraping.post('https://graphql.anilist.co', {
+            json: {                query: query,
+                variables: { id: parseInt(alId) }
             },
-            timeout: 10000
+            responseType: 'json',
+            timeout: { request: 10000 },
+            headers: headers
         });
         
-        if (anilistRes.data.errors) {
-            throw new Error(anilistRes.data.errors[0].message);
+        const data = response.body;
+        
+        if (data.errors) {
+            throw new Error(data.errors[0].message);
         }
         
-        const animeData = anilistRes.data.data.Media;
+        const animeData = data.data.Media;
         const malId = animeData.idMal;
         const totalEps = animeData.episodes || 12;
         const title = animeData.title.english || animeData.title.romaji || 'Unknown';
@@ -96,7 +85,8 @@ async function getEpisodes(watchUrl) {
     } catch (error) {
         console.error('Episode Extraction Error:', error.message);
         throw new Error(`Failed to fetch episode list: ${error.message}`);
-    }}
+    }
+}
 
 async function getVideoSourceUrl(episodeUrl, proxyConfig) {
     let browser;
@@ -106,8 +96,7 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
         const alMatch = episodeUrl.match(/[?&]al=(\d+)/);
         const epMatch = episodeUrl.match(/[?&]e=(\d+)/);
         
-        if (!alMatch) {
-            throw new Error('Could not extract AniList ID from URL');
+        if (!alMatch) {            throw new Error('Could not extract AniList ID from URL');
         }
         
         const alId = alMatch[1];
@@ -121,18 +110,17 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             }
         `;
         
-        const anilistRes = await axios.post('https://graphql.anilist.co', {
-            query: query,
-            variables: { id: parseInt(alId) }
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': headers['User-Agent']
+        const response = await gotScraping.post('https://graphql.anilist.co', {
+            json: {
+                query: query,
+                variables: { id: parseInt(alId) }
             },
-            timeout: 10000
+            responseType: 'json',
+            timeout: { request: 10000 },
+            headers: headers
         });
         
-        const malId = anilistRes.data.data.Media.idMal;
+        const malId = response.body.data.Media.idMal;
         
         const source = VIDEO_SOURCES[0];
         let videoPageUrl = source.base + source.path
@@ -145,7 +133,8 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
         console.log('[Puppeteer] 🌐 Setting up local proxy forwarder for ' + proxyConfig.ipPort + '...');
         localProxyUrl = await proxyChain.anonymizeProxy({
             host: proxyConfig.ipPort.split(':')[0],
-            port: parseInt(proxyConfig.ipPort.split(':')[1]),            username: proxyConfig.username,
+            port: parseInt(proxyConfig.ipPort.split(':')[1]),
+            username: proxyConfig.username,
             password: proxyConfig.password
         });
         console.log('[Puppeteer] ✅ Local proxy running at: ' + localProxyUrl);
@@ -156,8 +145,7 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             '--disable-background-networking', '--disable-blink-features=AutomationControlled',
             '--proxy-server=' + localProxyUrl
         ];
-        
-        browser = await puppeteer.launch({
+                browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
             args: launchArgs, timeout: 30000
         });
@@ -194,7 +182,8 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
                 if (btn) btn.click();
             });
         } catch (e) {}
-                await new Promise(function(resolve) { setTimeout(resolve, 3000); });
+        
+        await new Promise(function(resolve) { setTimeout(resolve, 3000); });
         
         if (!videoUrl) {
             throw new Error('Could not intercept video URL from player page.');
@@ -205,8 +194,7 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
     } catch (error) {
         throw new Error('Failed to extract video URL: ' + error.message);
     } finally {
-        if (browser) await browser.close();
-        if (localProxyUrl) {
+        if (browser) await browser.close();        if (localProxyUrl) {
             await proxyChain.closeAnonymizedProxy(localProxyUrl, true);
         }
     }
