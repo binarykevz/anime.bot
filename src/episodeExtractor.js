@@ -141,17 +141,12 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             throw new Error('Constructed videoPageUrl is invalid: ' + videoPageUrl);
         }
         
-        console.log('[Debug] 6. Proxy Config:', JSON.stringify(proxyConfig));
-        if (!proxyConfig || !proxyConfig.ipPort || !proxyConfig.ipPort.includes(':')) {
-            throw new Error('Invalid proxyConfig: ' + JSON.stringify(proxyConfig));
-        }
-        console.log('[Puppeteer] 🌐 Setting up local proxy forwarder for ' + proxyConfig.ipPort + '...');
-        localProxyUrl = await proxyChain.anonymizeProxy({
-            host: proxyConfig.ipPort.split(':')[0].trim(),
-            port: parseInt(proxyConfig.ipPort.split(':')[1].trim(), 10),
-            username: proxyConfig.username,
-            password: proxyConfig.password
-        });
+        console.log('[Debug] 6. Proxy Config IP:', proxyConfig.ipPort);
+
+        // 🚀 FIX: proxy-chain.anonymizeProxy expects a FULL URL STRING, not an object!
+        const proxyUrlString = `http://${proxyConfig.username}:${proxyConfig.password}@${proxyConfig.ipPort}`;
+                console.log('[Puppeteer] 🌐 Setting up local proxy forwarder...');
+        localProxyUrl = await proxyChain.anonymizeProxy(proxyUrlString);
         console.log('[Puppeteer] ✅ Local proxy running at: ' + localProxyUrl);
         
         const launchArgs = [
@@ -194,12 +189,12 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
         await new Promise(function(resolve) { setTimeout(resolve, 5000); });
         
         try {
-            await page.evaluate(function() {                const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button');
+            await page.evaluate(function() {
+                const btn = document.querySelector('.btn-play, .play-button, .play, button, .vjs-big-play-button');
                 if (btn) btn.click();
             });
         } catch (e) {
-            console.log('[Debug] Play button click failed or not found:', e.message);
-        }
+            console.log('[Debug] Play button click failed or not found:', e.message);        }
         
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
         
