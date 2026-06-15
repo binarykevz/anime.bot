@@ -69,8 +69,6 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         console.log('\n[Handler] --- Attempt ' + attempt + '/' + MAX_ATTEMPTS + ' ---');
-        
-        // 🚀 Get the proxy config object
         const proxyConfig = getNextProxyConfig();
         console.log('[Handler] 🌐 Using Proxy IP: ' + proxyConfig.ipPort);
         
