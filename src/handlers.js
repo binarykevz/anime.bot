@@ -1,4 +1,3 @@
-
 const fs = require('fs');
 const { getSearchResults } = require('./scraper');
 const { getEpisodes, getVideoSourceUrl } = require('./episodeExtractor');
@@ -42,13 +41,22 @@ function parseAnimeInfoFromUrl(url) {
 
 async function handleStart(bot, msg) {
     const chatId = msg.chat.id;
-    const welcomeMessage = '👋 <b>Welcome to the AniDoor Bot!</b>\n\n<b>Commands:</b>\n/search <name> - Search for an anime\n/episodes <watch_url> - List episodes\n/upload <watch_url> - Download & Send a single episode\n/auto <watch_url> [start] [end] - 🤖 <b>Auto-Batch</b> download & send multiple episodes!\n\n<i>Example:</i> <code>/auto https://anidoor.me/watch/?al=21 1 3</code>';
+    const welcomeMessage = `👋 <b>Welcome to the AniDoor Bot!</b>
+
+<b>Commands:</b>
+<code>/search</code> &lt;name&gt; - Search for an anime
+<code>/episodes</code> &lt;watch_url&gt; - List episodes
+<code>/upload</code> &lt;watch_url&gt; - Download & Send a single episode
+<code>/auto</code> &lt;watch_url&gt; [start] [end] - 🤖 <b>Auto-Batch</b> download & send multiple episodes!
+<i>Example:</i> <code>/auto https://anidoor.me/watch/?al=21 1 3</code>`;
+    
     await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'HTML' });
 }
 
 async function handleSearch(bot, msg, match) {
-    const chatId = msg.chat.id;    const query = match[1] ? match[1].trim() : '';
-    if (!query) return bot.sendMessage(chatId, "⚠️ Usage: <code>/search <anime name></code>", { parse_mode: 'HTML' });
+    const chatId = msg.chat.id;
+    const query = match[1] ? match[1].trim() : '';
+    if (!query) return bot.sendMessage(chatId, "⚠️ Usage: <code>/search &lt;anime name&gt;</code>", { parse_mode: 'HTML' });
 
     await bot.sendChatAction(chatId, 'typing');
     try {
@@ -57,9 +65,10 @@ async function handleSearch(bot, msg, match) {
 
         let message = '🔍 <b>Results for "' + escapeHtml(query) + '"</b>\n\n';
         results.slice(0, 10).forEach(function(anime, i) {
-            message += '<b>' + (i + 1) + '.</b> <a href="' + anime.url + '">' + escapeHtml(anime.title) + '</a>\n';
+            const safeUrl = escapeHtml(anime.url);
+            message += '<b>' + (i + 1) + '.</b> <a href="' + safeUrl + '">' + escapeHtml(anime.title) + '</a>\n';
         });
-        message += '\n<i>Use /upload <url> or /auto <url>.</i>';
+        message += '\n<i>Use <code>/upload &lt;url&gt;</code> or <code>/auto &lt;url&gt;</code>.</i>';
         await bot.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
     } catch (error) {
         await bot.sendMessage(chatId, '⚠️ Error searching anime: ' + escapeHtml(error.message));
@@ -87,8 +96,7 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
             tempFilePath = await downloadAndConvertToMp4(videoUrl, info.animeName, info.epNum, episodeUrl, proxyConfig);
             
             const fileSizeBytes = fs.statSync(tempFilePath).size;
-            const fileSizeMB = (fileSizeBytes / 1024 / 1024).toFixed(2);
-            
+            const fileSizeMB = (fileSizeBytes / 1024 / 1024).toFixed(2);            
             await bot.sendMessage(chatId, '⬆️ Sending video (' + fileSizeMB + ' MB) to Telegram...');
             
             await bot.sendVideo(chatId, tempFilePath, {
@@ -96,7 +104,8 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
                 parse_mode: 'HTML',
                 supportsStreaming: true
             });
-            await bot.sendMessage(chatId, '✅ <b>Success!</b> Video sent directly to chat.', { parse_mode: 'HTML' });            return true;
+            await bot.sendMessage(chatId, '✅ <b>Success!</b> Video sent directly to chat.', { parse_mode: 'HTML' });
+            return true;
             
         } catch (error) {
             lastError = error.message;
@@ -117,7 +126,7 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
 async function handleUpload(bot, msg, match) {
     const chatId = msg.chat.id;
     const episodeUrl = match[1] ? match[1].trim() : '';
-    if (!episodeUrl || !episodeUrl.includes('http')) return bot.sendMessage(chatId, "⚠️ Usage: <code>/upload <watch_url></code>", { parse_mode: 'HTML' });
+    if (!episodeUrl || !episodeUrl.includes('http')) return bot.sendMessage(chatId, "⚠️ Usage: <code>/upload &lt;watch_url&gt;</code>", { parse_mode: 'HTML' });
 
     await bot.sendMessage(chatId, "⏳ Starting process... Extracting and downloading video.");
     await processAndSendVideo(bot, chatId, episodeUrl);
@@ -129,15 +138,14 @@ async function handleAutoBatch(bot, msg, match) {
     const startEp = parseInt(match[2]) || 1;
     const endEp = parseInt(match[3]) || 3; 
     
-    if (!watchUrl || !watchUrl.includes('http')) return bot.sendMessage(chatId, "⚠️ Usage: <code>/auto <watch_url> [start_ep] [end_ep]</code>", { parse_mode: 'HTML' });
+    if (!watchUrl || !watchUrl.includes('http')) return bot.sendMessage(chatId, "⚠️ Usage: <code>/auto &lt;watch_url&gt; [start_ep] [end_ep]</code>", { parse_mode: 'HTML' });
 
     await bot.sendMessage(chatId, '🤖 <b>Auto-Batch Started!</b>\nDownloading episodes ' + startEp + ' to ' + endEp + '.', { parse_mode: 'HTML' });
 
     try {
         const episodes = await getEpisodes(watchUrl);
         if (episodes.length === 0) throw new Error('No episodes found.');
-        
-        const targetEpisodes = episodes.slice(startEp - 1, endEp);
+                const targetEpisodes = episodes.slice(startEp - 1, endEp);
 
         for (const ep of targetEpisodes) {
             await bot.sendMessage(chatId, '⏳ <b>Processing Episode ' + ep.number + '...</b>', { parse_mode: 'HTML' });
@@ -145,7 +153,8 @@ async function handleAutoBatch(bot, msg, match) {
             if (!success) {
                 await bot.sendMessage(chatId, '❌ Failed Ep ' + ep.number + '. Skipping...', { parse_mode: 'HTML' });
             }
-        }        await bot.sendMessage(chatId, '🎉 <b>Batch Complete!</b>', { parse_mode: 'HTML' });
+        }
+        await bot.sendMessage(chatId, '🎉 <b>Batch Complete!</b>', { parse_mode: 'HTML' });
     } catch (error) { 
         await bot.sendMessage(chatId, '❌ <b>Batch Failed:</b> ' + escapeHtml(error.message), { parse_mode: 'HTML' }); 
     }
