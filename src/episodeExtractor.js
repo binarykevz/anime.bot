@@ -60,8 +60,10 @@ async function getVideoSourceUrl(episodeUrl, proxyUrl) {
         ];
         
         if (proxyUrl) {
-            launchArgs.push('--proxy-server=' + proxyUrl);
-            console.log('[Puppeteer] 🌐 Using Proxy: ' + proxyUrl.replace(/:\/\/.*@/, '://***:***@'));
+            // 🚀 STRICTLY CLEAN THE PROXY URL TO PREVENT ERR_NO_SUPPORTED_PROXIES
+            const cleanProxy = proxyUrl.trim().replace(/\s+/g, '');
+            launchArgs.push('--proxy-server=' + cleanProxy);
+            console.log('[Puppeteer] 🌐 Using Cleaned Proxy: ' + cleanProxy.replace(/:\/\/.*@/, '://***:***@'));
         }
 
         browser = await puppeteer.launch({
@@ -88,7 +90,14 @@ async function getVideoSourceUrl(episodeUrl, proxyUrl) {
             }
         });
 
-        await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        console.log('[Puppeteer] 🌐 Navigating to episode page...');
+        try {
+            await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        } catch (gotoError) {
+            console.error('[Puppeteer] ❌ Navigation failed:', gotoError.message);
+            throw new Error('Puppeteer navigation failed: ' + gotoError.message + ' (Check if proxy requires socks5 instead of http)');
+        }
+
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
         try { await page.evaluate(function() { const btn = document.querySelector('.btn-play, .play-button, a[href="#player"], .vscontrol, .play-btn, button, .player-overlay, .play'); if (btn) btn.click(); }); } catch (e) {}
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
@@ -106,19 +115,22 @@ async function getVideoSourceUrl(episodeUrl, proxyUrl) {
 
         const apiUrl = 'https://megaplay.buzz/stream/getSources?id=' + videoId;
         
-        // 🚀 USE PROXY-AGENT FOR THE API CALL
+        const cleanProxyForAxios = proxyUrl ? proxyUrl.trim().replace(/\s+/g, '') : undefined;
         const axiosConfig = {
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': playerUrl, 'User-Agent': headers['User-Agent'] },
             timeout: 15000,
-            httpsAgent: new ProxyAgent(proxyUrl),
             proxy: false 
         };
+        
+        if (cleanProxyForAxios) {
+            axiosConfig.httpsAgent = new ProxyAgent(cleanProxyForAxios);
+        }
 
         const apiRes = await axios.get(apiUrl, axiosConfig);
 
         if (apiRes.data && apiRes.data.sources && apiRes.data.sources.file) {
             const videoUrl = apiRes.data.sources.file;
-            console.log('[Debug] ✅ SUCCESS! Extracted video URL via API through proxy-agent.');
+            console.log('[Debug] ✅ SUCCESS! Extracted video URL via API.');
             return videoUrl;
         } else {
             throw new Error('MegaPlay API did not return a video source.');
