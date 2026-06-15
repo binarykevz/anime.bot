@@ -2,9 +2,9 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
+const { ProxyAgent } = require('proxy-agent');
 
 const BASE_URL = 'https://anikai.watch';
-
 const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -12,17 +12,17 @@ const headers = {
     'Referer': BASE_URL + '/'
 };
 
+// 🚀 Read proxy directly from environment variables
+const PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
+
 async function getEpisodes(animeUrl) {
     try {
-        console.log('[Debug] Fetching anime page: ' + animeUrl);
         let slugMatch = animeUrl.match(/\/([^/]+?)(?:-episode-\d+|-ep-\d+)?(?:-in-english-(?:subbed|dubbed))?\/?$/i);
         let slug = slugMatch ? slugMatch[1] : animeUrl.split('/').filter(Boolean).pop();
         let seriesUrl = animeUrl;
         if (animeUrl.includes('-episode-') || animeUrl.includes('-ep-')) {
             seriesUrl = BASE_URL + '/series/' + slug + '/';
         }
-
-        console.log('[Debug] Fetching series page: ' + seriesUrl);
         let htmlRes;
         try {
             htmlRes = await axios.get(seriesUrl, { headers: headers, timeout: 10000 });
@@ -30,7 +30,6 @@ async function getEpisodes(animeUrl) {
             seriesUrl = BASE_URL + '/' + slug + '/';
             htmlRes = await axios.get(seriesUrl, { headers: headers, timeout: 10000 });
         }
-        
         const $ = cheerio.load(htmlRes.data);
         const episodes = [];
         $('a').each(function(i, el) {
@@ -43,24 +42,34 @@ async function getEpisodes(animeUrl) {
                 }
             }
         });
-
         if (episodes.length === 0) {
             const epNumMatch = animeUrl.match(/(?:-episode-|-ep-)(\d+)/i);
             const epNum = epNumMatch ? epNumMatch[1] : '1';
-            episodes.push({ number: epNum, url: animeUrl, id: animeUrl });        }
-        return episodes;
-    } catch (error) {
+            episodes.push({ number: epNum, url: animeUrl, id: animeUrl });
+        }
+        return episodes;    } catch (error) {
         throw new Error('Failed to fetch episode list: ' + error.message);
     }
 }
 
 async function getVideoSourceUrl(episodeUrl) {
-    console.log('[Debug] Launching Puppeteer (API Direct Strike) for: ' + episodeUrl);
     let browser;
     try {
+        const launchArgs = [
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+            '--disable-gpu', '--no-zygote', '--disable-extensions',
+            '--disable-background-networking', '--disable-blink-features=AutomationControlled'
+        ];
+        
+        // 🚀 Tell Puppeteer to use the proxy from ENV
+        if (PROXY_URL) {
+            launchArgs.push('--proxy-server=' + PROXY_URL);
+            console.log('[Puppeteer] 🌐 Using Proxy from ENV: ' + PROXY_URL.replace(/:\/\/.*@/, '://***:***@'));
+        }
+
         browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--disable-extensions', '--disable-background-networking', '--disable-blink-features=AutomationControlled'],
+            args: launchArgs,
             timeout: 30000 
         });
 
@@ -83,11 +92,10 @@ async function getVideoSourceUrl(episodeUrl) {
             }
         });
 
-        await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.goto(episodeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
         try { await page.evaluate(function() { const btn = document.querySelector('.btn-play, .play-button, a[href="#player"], .vscontrol, .play-btn, button, .player-overlay, .play'); if (btn) btn.click(); }); } catch (e) {}
         await new Promise(function(resolve) { setTimeout(resolve, 3000); });
-
         if (!playerUrl) throw new Error('Could not intercept video host URL from main page.');
 
         let videoId = null;
@@ -96,20 +104,25 @@ async function getVideoSourceUrl(episodeUrl) {
         else {
             const fallbackMatch = playerUrl.match(/\/(\d{4,})(?:\/|$)/);
             if (fallbackMatch && fallbackMatch[1]) videoId = fallbackMatch[1];
-        }        if (!videoId) throw new Error('Could not extract ID from player URL: ' + playerUrl);
+        }
+        if (!videoId) throw new Error('Could not extract ID from player URL: ' + playerUrl);
 
         const apiUrl = 'https://megaplay.buzz/stream/getSources?id=' + videoId;
-        const apiRes = await axios.get(apiUrl, {
+        
+        // 🚀 USE PROXY-AGENT FOR THE API CALL (Automatically reads from ENV)
+        const axiosConfig = {
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': playerUrl, 'User-Agent': headers['User-Agent'] },
-            timeout: 10000
-        });
+            timeout: 15000,
+            httpsAgent: new ProxyAgent(),
+            proxy: false 
+        };
+
+        const apiRes = await axios.get(apiUrl, axiosConfig);
 
         if (apiRes.data && apiRes.data.sources && apiRes.data.sources.file) {
             const videoUrl = apiRes.data.sources.file;
-            const cookies = apiRes.headers['set-cookie'] || [];
-            console.log('[Debug] ✅ SUCCESS! Extracted video URL via API.');
-            console.log('[Debug] 🍩 Captured ' + cookies.length + ' cookies from API.');
-            return { videoUrl: videoUrl, cookies: cookies };
+            console.log('[Debug] ✅ SUCCESS! Extracted video URL via API through proxy-agent.');
+            return videoUrl;
         } else {
             throw new Error('MegaPlay API did not return a video source.');
         }
