@@ -1,4 +1,4 @@
-const { gotScraping } = require('got-scraping');
+const axios = require('axios');
 
 const ANILIST_GRAPHQL = 'https://graphql.anilist.co';
 
@@ -29,24 +29,23 @@ async function getSearchResults(query) {
     try {
         console.log(`[AniList] Searching for: ${query}`);
         
-        const response = await gotScraping.post(ANILIST_GRAPHQL, {
-            json: {
-                query: SEARCH_QUERY,
-                variables: {
-                    search: query,
-                    page: 1,
-                    perPage: 10
-                }
-            },
-            responseType: 'json',
-            timeout: { request: 10000 },
+        const response = await axios.post(ANILIST_GRAPHQL, {
+            query: SEARCH_QUERY,
+            variables: {
+                search: query,
+                page: 1,
+                perPage: 10
+            }
+        }, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json'
-            }
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            timeout: 10000
         });
 
-        const data = response.body;
+        const data = response.data;
 
         if (data.errors) {
             throw new Error(data.errors[0].message);
