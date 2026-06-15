@@ -1,10 +1,10 @@
-
+cat << 'EOF' > /home/ubuntu/anime.bot/src/downloader.js
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent) {
+async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, proxyUrl) {
     return new Promise((resolve, reject) => {
         const args = [
             videoUrl, '-o', tempFilePath,
@@ -12,12 +12,15 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent) 
             '--add-header', 'User-Agent: ' + userAgent,
             '--add-header', 'Origin: https://megaplay.buzz',
             '--no-check-certificate', '--no-warnings', '--no-mtime', '--no-part',
-            '--socket-timeout', '20',
-            '--retries', '3'
+            '--socket-timeout', '20', '--retries', '3'
         ];
 
-        // 🚀 yt-dlp natively reads http_proxy/https_proxy from process.env
-        const ytDlp = spawn('yt-dlp', args, { env: process.env });
+        if (proxyUrl) {
+            args.push('--proxy', proxyUrl);
+            console.log('[yt-dlp] 🌐 Using Proxy: ' + proxyUrl.replace(/:\/\/.*@/, '://***:***@'));
+        }
+
+        const ytDlp = spawn('yt-dlp', args);
         let stderr = '';
         ytDlp.stderr.on('data', (data) => { stderr += data.toString(); });
         ytDlp.on('close', (code) => { if (code === 0) resolve(true); else reject(new Error(stderr)); });
@@ -25,7 +28,7 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent) 
     });
 }
 
-async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeUrl) {
+async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeUrl, proxyUrl) {
     const tempDir = os.tmpdir();
     const safeName = (animeName + '_Ep' + episodeNum).replace(/[\/\\:*?"<>|]/g, '_');
     const tempFilePath = path.join(tempDir, safeName + '_' + Date.now() + '.mp4');
@@ -36,8 +39,8 @@ async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeU
     for (let i = 0; i < referers.length; i++) {
         const referer = referers[i];
         try {
-            await downloadWithYtDlp(videoUrl, tempFilePath, referer, userAgent);
-            console.log('[yt-dlp] ✅ SUCCESS! Downloaded via ENV proxy.');
+            await downloadWithYtDlp(videoUrl, tempFilePath, referer, userAgent, proxyUrl);
+            console.log('[yt-dlp] ✅ SUCCESS! Downloaded.');
             return tempFilePath;
         } catch (err) {
             const errorMsg = err.message.slice(-300);
@@ -59,3 +62,4 @@ function cleanupTempFile(filePath) {
 }
 
 module.exports = { downloadAndConvertToMp4: downloadAndConvertToMp4, cleanupTempFile: cleanupTempFile };
+EOF
