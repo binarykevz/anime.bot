@@ -15,10 +15,10 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, 
             '--socket-timeout', '20', '--retries', '3'
         ];
 
-        // 🚀 yt-dlp natively supports inline auth (http://user:pass@ip:port)
+        // yt-dlp natively supports HTTP proxies with inline auth
         if (proxyConfig && proxyConfig.fullHttp) {
             args.push('--proxy', proxyConfig.fullHttp);
-            console.log('[yt-dlp] 🌐 Using Proxy: ' + proxyConfig.fullHttp.replace(/:\/\/.*@/, '://***:***@'));
+            console.log('[yt-dlp] 🌐 Using HTTP Proxy: ' + proxyConfig.fullHttp.replace(/:\/\/.*@/, '://***:***@'));
         }
 
         const ytDlp = spawn('yt-dlp', args);
@@ -63,4 +63,3 @@ function cleanupTempFile(filePath) {
 }
 
 module.exports = { downloadAndConvertToMp4: downloadAndConvertToMp4, cleanupTempFile: cleanupTempFile };
-
