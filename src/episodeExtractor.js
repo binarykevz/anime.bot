@@ -1,4 +1,4 @@
-cat << 'EOF' > /home/ubuntu/anime.bot/src/episodeExtractor.js
+
 const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
@@ -139,4 +139,4 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
 }
 
 module.exports = { getEpisodes: getEpisodes, getVideoSourceUrl: getVideoSourceUrl };
-EOF
+
