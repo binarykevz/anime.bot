@@ -59,10 +59,10 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             '--disable-background-networking', '--disable-blink-features=AutomationControlled'
         ];
         
-        // 🚀 CRITICAL FIX: Pass proxy WITHOUT credentials to Chromium
-        const proxyServerUrl = `http://${proxyConfig.ipPort}`;
+        // 🚀 CRITICAL FIX: Use SOCKS5 for Puppeteer to bypass ERR_NO_SUPPORTED_PROXIES
+        const proxyServerUrl = `socks5://${proxyConfig.ipPort}`;
         launchArgs.push('--proxy-server=' + proxyServerUrl);
-        console.log('[Puppeteer] 🌐 Using Proxy Server: ' + proxyServerUrl);
+        console.log('[Puppeteer] 🌐 Using SOCKS5 Proxy: ' + proxyServerUrl);
 
         browser = await puppeteer.launch({
             headless: true, ignoreHTTPSErrors: true,
@@ -71,7 +71,7 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
 
         const page = await browser.newPage();
         
-        // 🚀 CRITICAL FIX: Authenticate the proxy using Puppeteer's built-in method
+        // Authenticate the SOCKS5 proxy
         if (proxyConfig.username && proxyConfig.password) {
             await page.authenticate({ username: proxyConfig.username, password: proxyConfig.password });
             console.log('[Puppeteer] 🔑 Proxy credentials applied.');
@@ -114,7 +114,7 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
 
         const apiUrl = 'https://megaplay.buzz/stream/getSources?id=' + videoId;
         
-        // 🚀 For Axios, we CAN use the full URL with inline auth via proxy-agent
+        // Axios uses HTTP proxy with inline auth (works perfectly)
         const axiosConfig = {
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': playerUrl, 'User-Agent': headers['User-Agent'] },
             timeout: 15000,
@@ -139,4 +139,3 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
 }
 
 module.exports = { getEpisodes: getEpisodes, getVideoSourceUrl: getVideoSourceUrl };
-
