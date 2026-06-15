@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, proxyUrl) {
+async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent) {
     return new Promise((resolve, reject) => {
         const args = [
             videoUrl, '-o', tempFilePath,
@@ -16,15 +16,8 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, 
             '--retries', '3'
         ];
 
-        // 🚀 STRICT CHECK: Only use proxy if it's a valid, non-empty string starting with http
-        if (proxyUrl && typeof proxyUrl === 'string' && proxyUrl.trim() !== '' && proxyUrl.startsWith('http')) {
-            args.push('--proxy', proxyUrl);
-            console.log('[yt-dlp] 🌐 Using Proxy: ' + proxyUrl);
-        } else {
-            console.log('[yt-dlp] ⚠️ No valid proxy provided. Trying direct connection...');
-        }
-
-        const ytDlp = spawn('yt-dlp', args);
+        // 🚀 yt-dlp natively reads http_proxy/https_proxy from process.env
+        const ytDlp = spawn('yt-dlp', args, { env: process.env });
         let stderr = '';
         ytDlp.stderr.on('data', (data) => { stderr += data.toString(); });
         ytDlp.on('close', (code) => { if (code === 0) resolve(true); else reject(new Error(stderr)); });
@@ -32,7 +25,7 @@ async function downloadWithYtDlp(videoUrl, tempFilePath, refererUrl, userAgent, 
     });
 }
 
-async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeUrl, proxyUrl) {
+async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeUrl) {
     const tempDir = os.tmpdir();
     const safeName = (animeName + '_Ep' + episodeNum).replace(/[\/\\:*?"<>|]/g, '_');
     const tempFilePath = path.join(tempDir, safeName + '_' + Date.now() + '.mp4');
@@ -43,8 +36,8 @@ async function downloadAndConvertToMp4(videoUrl, animeName, episodeNum, episodeU
     for (let i = 0; i < referers.length; i++) {
         const referer = referers[i];
         try {
-            await downloadWithYtDlp(videoUrl, tempFilePath, referer, userAgent, proxyUrl);
-            console.log('[yt-dlp] ✅ SUCCESS! Downloaded.');
+            await downloadWithYtDlp(videoUrl, tempFilePath, referer, userAgent);
+            console.log('[yt-dlp] ✅ SUCCESS! Downloaded via ENV proxy.');
             return tempFilePath;
         } catch (err) {
             const errorMsg = err.message.slice(-300);
