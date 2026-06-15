@@ -34,10 +34,7 @@ async function getEpisodes(watchUrl) {
         const query = `
             query($id: Int) {
                 Media(id: $id, type: ANIME) {
-                    id
-                    idMal
-                    episodes
-                    title { english romaji }
+                    id idMal episodes title { english romaji }
                 }
             }
         `;
@@ -47,10 +44,10 @@ async function getEpisodes(watchUrl) {
             variables: { id: parseInt(alId, 10) }
         }, { headers: headers, timeout: 10000 });
         
-        const data = response.data;        if (data.errors) throw new Error(data.errors[0].message);
+        const data = response.data;
+        if (data.errors) throw new Error(data.errors[0].message);
         
-        const animeData = data.data.Media;
-        const malId = animeData.idMal;
+        const animeData = data.data.Media;        const malId = animeData.idMal;
         const totalEps = animeData.episodes || 12;
         const title = animeData.title.english || animeData.title.romaji || 'Unknown';
         
@@ -96,10 +93,10 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             variables: { id: parseInt(alId, 10) }
         }, { headers: headers, timeout: 10000 });
         
-        if (!response.data || !response.data.data || !response.data.data.Media) {            throw new Error('Invalid response from AniList API');
+        if (!response.data || !response.data.data || !response.data.data.Media) {
+            throw new Error('Invalid response from AniList API');
         }
-        
-        const malId = response.data.data.Media.idMal;
+                const malId = response.data.data.Media.idMal;
         
         const source = VIDEO_SOURCES[0];
         let videoPageUrl = source.base + source.path
@@ -130,26 +127,36 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
         await page.setUserAgent(headers['User-Agent']);
         await page.setExtraHTTPHeaders({ 'Referer': BASE_URL + '/' });
         
-        const client = await page.target().createCDPSession();
-        await client.send('Network.enable');
-        
         let videoUrl = null;
         
-        // 🚀 LOG ALL NETWORK REQUESTS TO SEE WHAT THE PAGE IS DOING
-        client.on('Network.responseReceived', function(event) {
-            const url = event.response.url;
-            const type = event.type;
+        // 🚀 CRITICAL FIX: Intercept the API RESPONSE directly!
+        page.on('response', async function(response) {
+            const url = response.url();
             
-            // Log all XHR/Fetch/Document requests
-            if (type === 'XHR' || type === 'Fetch' || type === 'Document') {
-                console.log(`[Net] ${type}: ${url.substring(0, 150)}`);
-            }
-            
-            if (url.includes('.m3u8') || url.includes('.mp4')) {                if (!url.includes('ads') && !url.includes('preroll') && !url.includes('.woff')) {
-                    if (!videoUrl) {
-                        videoUrl = url;
-                        console.log(`[Debug] ✅ Intercepted video URL via Network: ${videoUrl}`);
+            // Catch the getSources or getSourcesNew API call
+            if (url.includes('getSources')) {
+                console.log(`[Debug] 🎯 Intercepted API response: ${url}`);
+                try {
+                    const json = await response.json();
+                    console.log(`[Debug] 📦 API JSON Keys:`, Object.keys(json));
+                    
+                    if (json.sources) {
+                        console.log(`[Debug] 📦 Sources structure:`, typeof json.sources, Array.isArray(json.sources) ? 'Array' : 'Object');
+                        console.log(`[Debug] 📦 Sources preview:`, JSON.stringify(json.sources).substring(0, 300));
+                        
+                        // Extract URL based on different possible JSON structures
+                        if (json.sources.file) {                            videoUrl = json.sources.file;
+                        } else if (Array.isArray(json.sources) && json.sources.length > 0) {
+                            if (json.sources[0].url) videoUrl = json.sources[0].url;
+                            else if (json.sources[0].file) videoUrl = json.sources[0].file;
+                        }
+                        
+                        if (videoUrl) {
+                            console.log(`[Debug] ✅ SUCCESS! Extracted video URL from API response: ${videoUrl}`);
+                        }
                     }
+                } catch (e) {
+                    console.log('[Debug] ⚠️ Could not parse API JSON:', e.message);
                 }
             }
         });
@@ -157,44 +164,17 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
         console.log('[Puppeteer] 🌐 Navigating to video page...');
         await page.goto(videoPageUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
         
-        // Wait longer for player to render
-        await new Promise(function(resolve) { setTimeout(resolve, 6000); });
+        // Wait for the page to make the API call
+        await new Promise(function(resolve) { setTimeout(resolve, 8000); });
         
-        // 🚀 DEBUG: Dump HTML and Screenshot
-        const htmlContent = await page.content();
-        fs.writeFileSync('/tmp/megaplay_debug.html', htmlContent);
-        await page.screenshot({ path: '/tmp/megaplay_debug.png', fullPage: true });
-        console.log('[Debug] 📸 Saved debug screenshot to /tmp/megaplay_debug.png');
-        console.log('[Debug] 📄 Saved debug HTML to /tmp/megaplay_debug.html');
-
-        // 🚀 Try multiple ways to trigger play
-        try {
-            await page.evaluate(function() {
-                const selectors = ['.btn-play', '.play-button', '.play', 'button', '.vjs-big-play-button', '.plyr__control', '.center-btn', '.jw-icon-display', 'video'];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        el.click();
-                        break;
-                    }
-                }
-                // Click center of page
-                document.body.click();
-            });
-        } catch (e) {}
-        
-        // Try pressing Spacebar (universal HTML5 play/pause toggle)
-        await page.keyboard.press('Space');
-        
-        await new Promise(function(resolve) { setTimeout(resolve, 5000); });
-        
-        // 🚀 FALLBACK 1: Scan page scripts for hardcoded video URLs
         if (!videoUrl) {
-            console.log('[Debug] 🔍 Network listener missed video URL. Scanning page scripts...');
+            // Fallback: Check if the URL is hardcoded in the page scripts
+            console.log('[Debug] 🔍 API interception failed. Scanning page scripts...');
             const scriptUrl = await page.evaluate(function() {
                 const scripts = document.querySelectorAll('script');
                 for (let script of scripts) {
-                    const text = script.innerHTML;                    if (text.includes('.m3u8') || text.includes('.mp4')) {
+                    const text = script.innerHTML;
+                    if (text.includes('.m3u8') || text.includes('.mp4')) {
                         const match = text.match(/(https?:\/\/[^\s"'<>\\]+\.(?:m3u8|mp4)[^\s"'<>\\]*)/);
                         if (match) return match[1];
                     }
@@ -207,43 +187,20 @@ async function getVideoSourceUrl(episodeUrl, proxyConfig) {
             }
         }
 
-        // 🚀 FALLBACK 2: Scan for iframes and video tags
         if (!videoUrl) {
-            console.log('[Debug] 🔍 Scanning page for iframes and video tags...');
-            const domData = await page.evaluate(function() {
-                const iframes = [];
-                document.querySelectorAll('iframe').forEach(function(iframe) {
-                    if (iframe.src) iframes.push(iframe.src);
-                });
-                const videos = [];
-                document.querySelectorAll('video, video source').forEach(function(v) {
-                    if (v.src) videos.push(v.src);
-                });
-                return { iframes: iframes, videos: videos };
-            });
-            console.log('[Debug] 🔍 Found Iframes:', domData.iframes);
-            console.log('[Debug] 🔍 Found Video Tags:', domData.videos);
-            
-            // If we found an iframe, that might be the real player!
-            if (domData.iframes.length > 0) {
-                console.log('[Debug] ⚠️ Video URL not found, but found iframe. The player might be inside this iframe.');
-            }
-        }
-        
-        if (!videoUrl) {
-            throw new Error('Could not intercept video URL from player page. Check /tmp/megaplay_debug.png and terminal logs.');
+            throw new Error('Could not intercept video URL from API response or page scripts.');
         }
         
         return videoUrl;
         
     } catch (error) {
-        console.error('[Debug] ❌ ERROR CAUGHT IN getVideoSourceUrl:', error.message);
-        throw new Error('Failed to extract video URL: ' + error.message);
+        console.error('[Debug] ❌ ERROR CAUGHT IN getVideoSourceUrl:', error.message);        throw new Error('Failed to extract video URL: ' + error.message);
     } finally {
         if (browser) await browser.close();
         if (localProxyUrl) {
             try {
-                await proxyChain.closeAnonymizedProxy(localProxyUrl, true);            } catch (e) {}
+                await proxyChain.closeAnonymizedProxy(localProxyUrl, true);
+            } catch (e) {}
         }
     }
 }
