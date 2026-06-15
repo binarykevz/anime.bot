@@ -1,4 +1,4 @@
-cat << 'EOF' > /home/ubuntu/anime.bot/src/downloader.js
+
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -63,4 +63,4 @@ function cleanupTempFile(filePath) {
 }
 
 module.exports = { downloadAndConvertToMp4: downloadAndConvertToMp4, cleanupTempFile: cleanupTempFile };
-EOF
+
