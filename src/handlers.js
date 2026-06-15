@@ -76,6 +76,7 @@ async function handleSearch(bot, msg, match) {
 }
 
 async function processAndSendVideo(bot, chatId, episodeUrl) {
+console.log('[Handler] 🚀 processAndSendVideo called with episodeUrl:', episodeUrl);
     const MAX_ATTEMPTS = 5;
     let tempFilePath = null;
     let lastError = 'Unknown error';
