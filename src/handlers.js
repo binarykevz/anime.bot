@@ -1,12 +1,24 @@
 
 const fs = require('fs');
-const axios = require('axios');
 const { getSearchResults } = require('./scraper');
 const { getEpisodes, getVideoSourceUrl } = require('./episodeExtractor');
 const { downloadAndConvertToMp4, cleanupTempFile } = require('./downloader');
 
-// 🚀 HARDCODED PROXIFLY API KEY
-const PROXIFLY_API_KEY = 'DfsoKCc4P27Thn498EQUPAyXPyzs6Y1QLNHYdmvTowou';
+// 🚀 YOUR WEBSHARE PROXY LIST (Rotates automatically)
+const PROXY_USER = 'bgfqfdjy';
+const PROXY_PASS = 'xgrj384kx4yw';
+const PROXY_LIST = [
+    '38.154.203.95:5863', '198.105.121.200:6462', '64.137.96.74:6641',
+    '209.127.138.10:5784', '38.154.185.97:6370', '84.247.60.125:6095',
+    '142.111.67.146:5611', '191.96.254.138:6185', '104.239.107.47:5699', '23.229.19.94:8689'
+];
+let proxyIndex = 0;
+
+function getNextProxyUrl() {
+    const ipPort = PROXY_LIST[proxyIndex % PROXY_LIST.length];
+    proxyIndex++;
+    return `http://${PROXY_USER}:${PROXY_PASS}@${ipPort}`;
+}
 
 function escapeHtml(text) {
     if (!text) return '';
@@ -22,43 +34,6 @@ function parseAnimeInfoFromUrl(url) {
     let animeName = cleanSlug.replace(/(?:-episode-|-ep-)\d+.*/i, '');
     animeName = animeName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return { animeName: animeName, epNum: epNum };
-}
-
-async function fetchProxiflyProxy() {
-    try {
-        console.log('[Proxifly] 🌐 Fetching a fresh random proxy via API...');
-        
-        // 🚀 Add a 2-second delay to help prevent triggering the 429 rate limit
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // Use the standard Proxifly API format with the hardcoded key
-        const url = `https://api.proxifly.dev/proxy?apikey=${PROXIFLY_API_KEY}`;
-        const res = await axios.get(url, { timeout: 10000 });
-        
-        let proxyStr = '';
-        if (typeof res.data === 'string') {
-            proxyStr = res.data.trim();
-        } else if (res.data && res.data.ip && res.data.port) {
-            proxyStr = res.data.ip + ':' + res.data.port;
-        } else if (Array.isArray(res.data) && res.data.length > 0) {
-            const p = res.data[0];
-            proxyStr = p.ip ? (p.ip + ':' + p.port) : (typeof p === 'string' ? p.trim() : '');
-        }
-        
-        if (proxyStr && proxyStr.length > 5 && !proxyStr.includes('html')) {
-            const proxyUrl = proxyStr.startsWith('http') ? proxyStr : 'http://' + proxyStr;
-            console.log('[Proxifly] ✅ Got proxy: ' + proxyUrl);            return proxyUrl;
-        }
-        
-        console.log('[Proxifly] ⚠️ API returned empty or invalid data.');
-        return null;
-    } catch (err) {
-        console.error('[Proxifly] ⚠️ Failed to fetch proxy:', err.message);
-        if (err.response && err.response.status === 429) {
-            console.error('[Proxifly] ❌ RATE LIMIT HIT (429). The API key has exceeded its limit. Waiting before retry...');
-        }
-        return null;
-    }
 }
 
 async function handleStart(bot, msg) {
@@ -88,7 +63,10 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         console.log('\n[Handler] --- Attempt ' + attempt + '/' + MAX_ATTEMPTS + ' ---');
-        const proxyUrl = await fetchProxiflyProxy();
+        
+        // 🚀 Get the next proxy from the Webshare list
+        const proxyUrl = getNextProxyUrl();
+        console.log('[Handler] 🌐 Using Proxy: ' + proxyUrl.replace(/:\/\/.*@/, '://***:***@'));
         
         try {
             await bot.sendMessage(chatId, '🔍 Extracting video source (Attempt ' + attempt + ')...');
@@ -96,7 +74,9 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
 
             await bot.sendChatAction(chatId, 'upload_video');
             await bot.sendMessage(chatId, '⬇️ Downloading and converting to MP4...');
-            tempFilePath = await downloadAndConvertToMp4(videoUrl, info.animeName, info.epNum, episodeUrl, proxyUrl);            
+            tempFilePath = await downloadAndConvertToMp4(videoUrl, info.animeName, info.epNum, episodeUrl, proxyUrl);
+            
+            // 🚀 CALCULATE AND DISPLAY FILE SIZE
             const fileSizeBytes = fs.statSync(tempFilePath).size;
             const fileSizeMB = (fileSizeBytes / 1024 / 1024).toFixed(2);
             
@@ -116,11 +96,6 @@ async function processAndSendVideo(bot, chatId, episodeUrl) {
                 cleanupTempFile(tempFilePath);
                 tempFilePath = null;
             }
-            // If it's a 429 error, wait 10 seconds before the next attempt to let the limit reset
-            if (error.message && error.message.includes('429')) {
-                console.log('[Handler] ⏳ Waiting 10 seconds due to rate limit...');
-                await new Promise(resolve => setTimeout(resolve, 10000));
-            }
         }
     }
     return false;
@@ -134,7 +109,7 @@ async function handleUpload(bot, msg, match) {
     await bot.sendMessage(chatId, "⏳ Starting process... Extracting and downloading video.");
     const success = await processAndSendVideo(bot, chatId, episodeUrl);
     if (!success) {
-        await bot.sendMessage(chatId, '❌ <b>Error:</b> Download failed after 5 attempts. The Proxifly API key may have hit its hourly rate limit (429). Please wait 10 minutes and try again.', { parse_mode: 'HTML' });
+        await bot.sendMessage(chatId, '❌ <b>Error:</b> Download failed after 5 attempts. All proxies might be blocked or the video URL expired.', { parse_mode: 'HTML' });
     }
 }
 
@@ -146,6 +121,7 @@ async function handleAutoBatch(bot, msg, match) {
     if (!animeUrl || !animeUrl.includes('http')) return bot.sendMessage(chatId, "⚠️ Usage: <code>/auto &lt;anime_url&gt; [start_ep] [end_ep]</code>", { parse_mode: 'HTML' });
 
     await bot.sendMessage(chatId, '🤖 <b>Auto-Batch Started!</b>\nDownloading episodes ' + startEp + ' to ' + endEp + '.', { parse_mode: 'HTML' });
+
     try {
         const episodes = await getEpisodes(animeUrl);
         if (episodes.length === 0) throw new Error('No episodes found.');
